@@ -1,0 +1,1350 @@
+---
+title: "No Metabolite Filtering Data Exploration"
+author: "Dennis Dimitri Krutkin"
+date: "2024-02-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(stringr)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggfortify)
+library(ggpubr)
+library(ggforce)
+library(vegan)
+library(missForest)
+library(impute)
+library(VIM)
+library(laeken)
+library(cowplot)
+library(httpgd)
+library(scales)
+getwd()
+```
+
+```{r, include = FALSE}
+standards = c("X261_i", "X176_i", "X531_i", "X60_i", "X968_i", "X3051", "X1872_i", "X1875_i", "X3153", "X3023", "X3117", "X2534", "X3098", "X1030_i", "X4036", "X1969_i", "X2047_i", "X2068_i", "X1003_i", "X2153_i", "X3423", "X2337_i", "X3026", "X3118", "X1880_i", "X1824_i", "X2968", "X1802_i", "X2001_i", "X1811_i", "X1767_i", "X1910_i", "X943_i")
+length(standards)
+```
+
+```{r}
+feature_table = read.csv("Feature_table.csv")
+feature_table
+```
+
+```{r}
+feature_table = feature_table %>% arrange(factor(Sample, levels = c("Allmix_BK_10pM", "Allmix_BK_10pM_1", "Allmix_BK_10pM_2", "Allmix_BK_100pM", "Allmix_BK_100pM_1", "Allmix_BK_100pM_2", "Allmix_BK_1nM", "Allmix_BK_1nM_1", "Allmix_BK_1nM_2", "Allmix_BK_10nM", "Allmix_BK_10nM_1", "Allmix_BK_10nM_2", "Allmix_BK_100nM", "Allmix_BK_100nM_1", "Allmix_BK_100nM_2", "Allmix_BK_1uM", "Allmix_BK_1uM_1", "Allmix_BK_1uM_2", "Allmix_BK_10uM", "Allmix_BK_10uM_1", "Allmix_BK_10uM_2"))) #Arrange the samples based on proper concentration (lowest - highest) and maintaining order of replicates
+feature_table
+
+Conditions = c("Allmix_BK_10pM", "Allmix_BK_10pM", "Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_100pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_1nM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_10nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_100nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_1uM", "Allmix_BK_1uM", "Allmix_BK_10uM", "Allmix_BK_10uM", "Allmix_BK_10uM")
+
+feature_table_merged_conditions = column_to_rownames(feature_table, var = "Sample")
+
+feature_table_merged_conditions = cbind(Conditions, feature_table_merged_conditions)
+feature_table_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+feature_table_merged_conditions$Conditions = factor(feature_table_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_merged_conditions
+```
+
+## TIC Normalization
+```{r, include = FALSE}
+# Calculate the sum of numeric values across each row in the TIC_normalized data frame and create a 'TIC' column with the result, excluding any NA values during the summation process
+feature_table_TIC_normalization_merged_conditions <- feature_table_merged_conditions %>% rowwise() %>% mutate(TIC = sum(c_across(where(is.numeric)), na.rm = TRUE))
+feature_table_TIC_normalization_merged_conditions
+
+#Normalize the numeric columns in the TIC_normalized data frame by dividing each element by the sum of its respective row ('TIC'), and then remove the original 'TIC' column from the data frame.
+feature_table_TIC_normalization_merged_conditions <- feature_table_TIC_normalization_merged_conditions %>%  mutate(across(where(is.numeric), ~ ./TIC)) %>% dplyr::select(-TIC)
+feature_table_TIC_normalization_merged_conditions
+
+feature_table_TIC_normalization_merged_conditions = as.data.frame(feature_table_TIC_normalization_merged_conditions)
+row.names(feature_table_TIC_normalization_merged_conditions) = row.names(feature_table_merged_conditions)
+feature_table_TIC_normalization_merged_conditions
+```
+
+## CLR
+
+```{r}
+hgd()
+hgd_view()
+dev.list()
+```
+
+
+```{r echo=TRUE}
+for (psuedocount_iteration in c(1, 1*10^-1, 1*10^-2, 1*10^-3, 1*10^-4, 1*10^-5, 1*10^-6, 1*10^-7, 1*10^-8, 1*10^-9)) {
+  hgd()
+  hgd_view()
+  #dev.off()
+  print(psuedocount_iteration)
+  
+  feature_table_CLR_standardized_merged_conditions = select(feature_table_TIC_normalization_merged_conditions, -Conditions) %>% decostand(method = "clr", pseudocount = psuedocount_iteration)
+  feature_table_CLR_standardized_merged_conditions
+  
+  feature_table_CLR_standardized_merged_conditions = cbind(Conditions, feature_table_CLR_standardized_merged_conditions)
+  feature_table_CLR_standardized_merged_conditions
+  
+  #Encode Conditions as a factor with discrete levels
+  feature_table_CLR_standardized_merged_conditions$Conditions = factor(feature_table_CLR_standardized_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+  feature_table_CLR_standardized_merged_conditions
+  
+  boxplot_raw_3153 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log(feature_table_merged_conditions$`X3153` + 1), fill = Conditions)) +
+    ggtitle("Estrone (raw data, log transformed)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    xlab("Concentration") +
+    ylab("log(signal + 1)") +
+    scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          axis.title.x = element_blank())
+    #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) 
+  
+  boxplot_TIC_normalization_3153 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = log10(feature_table_TIC_normalization_merged_conditions$`X3153` + 1), fill = Conditions)) +
+    ggtitle("Estrone (TIC-normalized, log10 transformed)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    xlab("Concentration") +
+    ylab("log10(signal/TIC + 1)") +
+    scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          axis.title.x = element_blank()) 
+    #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  boxplot_TIC_normalization_3153
+  
+  boxplot_CLR_standardization_3153 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X3153`, fill = Conditions)) +
+    ggtitle("Estrone (CLR-normalized)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylab("log((signal/TIC)/GM)") +
+    scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          axis.title.x = element_blank())
+    #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  
+  #print(plot_grid(boxplot_raw_3153, boxplot_TIC_normalization_3153, boxplot_CLR_standardization_3153))
+  #dev.new()
+  plot_grid(boxplot_raw_3153, boxplot_TIC_normalization_3153, boxplot_CLR_standardization_3153)
+  #dev.off()
+  #print(grid_plot)
+}
+#dev.off()
+#dev.list()
+#plots
+```
+
+```{r}
+feature_table_CLR_standardized_merged_conditions = select(feature_table_TIC_normalization_merged_conditions, -Conditions) %>% decostand(method = "clr", pseudocount = 0.000000000001)
+feature_table_CLR_standardized_merged_conditions
+
+feature_table_CLR_standardized_merged_conditions = cbind(Conditions, feature_table_CLR_standardized_merged_conditions)
+feature_table_CLR_standardized_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+feature_table_CLR_standardized_merged_conditions$Conditions = factor(feature_table_CLR_standardized_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_CLR_standardized_merged_conditions
+```
+
+## RCLR Standardization, followed by imputation
+### RCLR Standardization
+```{r}
+feature_table_RCLR_standardized_merged_conditions = select(feature_table_TIC_normalization_merged_conditions, -Conditions) %>% decostand(method = "rclr")
+feature_table_RCLR_standardized_merged_conditions
+
+feature_table_RCLR_standardized_merged_conditions = cbind(Conditions, feature_table_RCLR_standardized_merged_conditions)
+feature_table_RCLR_standardized_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+feature_table_RCLR_standardized_merged_conditions$Conditions = factor(feature_table_RCLR_standardized_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_RCLR_standardized_merged_conditions
+```
+
+### Minimum value imputation
+```{r}
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions = feature_table_RCLR_standardized_merged_conditions
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions[feature_table_RCLR_standardization_min_value_imputation_merged_conditions == 0] = min(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)])
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions
+```
+
+### kNN Imputation (VIM)
+```{r}
+KNN_input_feature_table_RCLR_standardized = feature_table_RCLR_standardized_merged_conditions
+
+KNN_input_feature_table_RCLR_standardized[KNN_input_feature_table_RCLR_standardized == 0] <- NA #Substitute 0 values with NA values
+KNN_input_feature_table_RCLR_standardized
+```
+
+#### Checking percentage of missing data
+```{r}
+missing_data_check = KNN_input_feature_table_RCLR_standardized
+sum(is.na(missing_data_check))
+```
+
+
+#### Only impute missing values from true data
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions = kNN(KNN_input_feature_table_RCLR_standardized, k = 3, numFun = mean, useImputedDist = FALSE, imp_var = FALSE)
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions
+```
+
+```{r}
+row.names(feature_table_RCLR_standardization_KNN_imputation_merged_conditions) = row.names(KNN_input_feature_table_RCLR_standardized) #Set row names for imputed dataframe
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions
+```
+
+#### Using imputations for further imputations
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+#feature_table_RCLR_standardization_KNN_imputation_use_imput_dist_merged_conditions = kNN(KNN_input_feature_table_RCLR_standardized, k = 3, numFun = mean, useImputedDist = TRUE, imp_var = FALSE)
+```
+
+```{r}
+#row.names(feature_table_RCLR_standardization_KNN_imputation_use_imput_dist_merged_conditions) = row.names(KNN_input_feature_table_RCLR_standardized) #Set row names for imputed dataframe
+#feature_table_RCLR_standardization_KNN_imputation_use_imput_dist_merged_conditions
+```
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions = feature_table_RCLR_standardized_merged_conditions
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+
+#Changes zeros in the data frame to be imputed to NA values
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[feature_table_RCLR_standardization_random_forests_imputation_merged_conditions == 0] <- NA
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+```
+
+```{r, include = FALSE, cache=TRUE}
+#This step takes the longest - about 4 minutes
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions_results = missForest(xmis = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, verbose = FALSE, xtrue = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)
+```
+
+```{r}
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions_results$ximp
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+```
+
+
+## Imputation, followed by RCLR transformation
+### kNN Imputation (VIM)
+```{r}
+KNN_input_feature_table_merged_conditions = feature_table_TIC_normalization_merged_conditions
+KNN_input_feature_table_merged_conditions
+
+KNN_input_feature_table_merged_conditions[KNN_input_feature_table_merged_conditions == 0] <- NA #Substitute 0 values with NA values
+KNN_input_feature_table_merged_conditions
+```
+#### Only impute missing values from true data
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+feature_table_KNN_imputation = kNN(KNN_input_feature_table_merged_conditions, k = 3, numFun = mean, useImputedDist = FALSE, imp_var = FALSE)
+feature_table_KNN_imputation
+```
+
+```{r}
+feature_table_KNN_imputation_CLR_standardization_merged_conditions = decostand(feature_table_KNN_imputation[2:ncol(feature_table_KNN_imputation)], method = "clr")
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+
+row.names(feature_table_KNN_imputation_CLR_standardization_merged_conditions) = row.names(feature_table_merged_conditions) #Set row names for imputed dataframe
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+
+feature_table_KNN_imputation_CLR_standardization_merged_conditions = cbind(Conditions, feature_table_KNN_imputation_CLR_standardization_merged_conditions)
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+feature_table_KNN_imputation_CLR_standardization_merged_conditions$Conditions = factor(feature_table_KNN_imputation_CLR_standardization_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+```
+
+
+#### Using imputations for further imputations
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+#feature_table_KNN_imputation_use_imputed_values = kNN(KNN_input_feature_table_merged_conditions, k = 3, numFun = mean, useImputedDist = TRUE, imp_var = FALSE)
+```
+
+```{r}
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions = decostand(feature_table_KNN_imputation_use_imputed_values[2:ncol(feature_table_KNN_imputation_use_imputed_values)], method = "clr")
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+#row.names(feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions) = row.names(feature_table_merged_conditions) #Set row names for imputed dataframe
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions = cbind(Conditions, feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions)
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions$Conditions = factor(feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+#feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+```
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+random_forests_imputation_merged_conditions = feature_table_TIC_normalization_merged_conditions
+random_forests_imputation_merged_conditions
+
+#Changes zeros in the data frame to be imputed to NA values
+random_forests_imputation_merged_conditions[random_forests_imputation_merged_conditions == 0] <- NA
+random_forests_imputation_merged_conditions
+```
+
+```{r, include = FALSE, cache=TRUE}
+#This step takes the longest - about 4 minutes
+random_forests_imputation_merged_conditions_results = missForest(xmis = random_forests_imputation_merged_conditions, verbose = FALSE, xtrue = random_forests_imputation_merged_conditions)
+```
+
+```{r}
+random_forests_imputation_merged_conditions = random_forests_imputation_merged_conditions_results$ximp
+random_forests_imputation_merged_conditions
+
+random_forests_imputation_CLR_standardization_merged_conditions = select(random_forests_imputation_merged_conditions, -Conditions) %>% decostand(method = "clr")
+random_forests_imputation_CLR_standardization_merged_conditions
+
+random_forests_imputation_CLR_standardization_merged_conditions = cbind(Conditions, random_forests_imputation_CLR_standardization_merged_conditions)
+random_forests_imputation_CLR_standardization_merged_conditions
+
+random_forests_imputation_CLR_standardization_merged_conditions$Conditions = factor(random_forests_imputation_CLR_standardization_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+random_forests_imputation_CLR_standardization_merged_conditions
+```
+
+## PCA Plots
+```{r}
+#Check which columns have zero variance, can't use scale. in prcomp for columns which have zero variance:
+which(apply(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)], 2, var) == 0)
+which(apply(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)], 2, var) == 0)
+```
+
+### Raw
+```{r}
+library(ggforce)
+# PCA_results_raw = prcomp(feature_table_merged_conditions[2:ncol(feature_table_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# #, main = "Raw Data PCA"
+# PCA_plot_raw = autoplot(PCA_results_raw, data = feature_table_merged_conditions, colour = "Conditions", frame = TRUE, frame.type = 'norm') +
+#   theme_bw() +
+#   #stat_ellipse() +
+#   geom_mark_ellipse(aes())
+#   theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         panel.border = element_rect(fill = NA, colour = "black", size = 1))
+#   
+#   #theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_raw
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_merged_conditions[2:ncol(feature_table_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_raw = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  stat_ellipse(level = 0.95)  + # 95% confidence interval ellipse
+  ggtitle("PCA (raw data)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  
+PCA_plot_raw
+```
+
+### TIC
+```{r}
+# PCA_results_TIC_normalization = prcomp(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_TIC_normalization = autoplot(PCA_results_TIC_normalization, data = feature_table_TIC_normalization_merged_conditions, main = "TIC Normalized Data PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_TIC_normalization
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_TIC_normalization = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-normalized data)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_TIC_normalization
+```
+
+### CLR
+```{r}
+# PCA_results_CLR_transformation = prcomp(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_CLR_transformation = autoplot(PCA_results_CLR_transformation, data = feature_table_CLR_standardized_merged_conditions, main = "CLR Standardized Data PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_CLR_transformation
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1] * -1, #Requested by Dr. Knight
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+
+PCA_plot_CLR_transformation = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-CLR transformed data)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_CLR_transformation
+```
+
+
+### RCLR Transformation, No Imputation
+```{r}
+# PCA_results_RCLR_transformation_no_imputation = prcomp(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_no_imputation = autoplot(PCA_results_RCLR_transformation_no_imputation, data = feature_table_RCLR_standardized_merged_conditions, main = "RCLR Standardized Data (No Imputation) PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_no_imputation
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_RCLR_transformation_no_imputation = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-CLR transformed data)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_RCLR_transformation_no_imputation
+```
+
+
+### RCLR Transformation, Minimum value imputation
+```{r}
+# PCA_results_RCLR_transformation_min_imputation = prcomp(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_min_imputation = autoplot(PCA_results_RCLR_transformation_min_imputation, data = feature_table_RCLR_standardization_min_value_imputation_merged_conditions, main = "RCLR Standardized Data, Minimum Value Imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_min_imputation
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_RCLR_transformation_min_imputation = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-RCLR transformed data, min-value imputation)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_RCLR_transformation_min_imputation
+```
+
+
+### RCLR Transformation, KNN Imputation
+```{r}
+# PCA_results_RCLR_transformation_KNN_imputation = prcomp(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_KNN_imputation = autoplot(PCA_results_RCLR_transformation_KNN_imputation, data = feature_table_RCLR_standardization_KNN_imputation_merged_conditions, main = "RCLR Standardized Data, KNN Imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_KNN_imputation
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_RCLR_transformation_KNN_imputation = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-RCLR transformed data, kNN imputation)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) + 
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_RCLR_transformation_KNN_imputation
+```
+
+
+### RCLR Transformation, Random Forests Imputation
+```{r}
+# PCA_results_RCLR_transformation_random_forests_imputation = prcomp(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_random_forests_imputation = autoplot(PCA_results_RCLR_transformation_random_forests_imputation, data = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, main = "RCLR Standardized Data, Random Forests imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_random_forests_imputation
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_RCLR_transformation_random_forests_imputation = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (TIC-RCLR transformed data, Random Forest imputation)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) + 
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_RCLR_transformation_random_forests_imputation
+```
+
+### KNN Imputation, CLR Standardization
+```{r}
+# PCA_results_KNN_imputation_CLR_standardization = prcomp(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_KNN_imputation_CLR_standardization = autoplot(PCA_results_KNN_imputation_CLR_standardization, data = feature_table_KNN_imputation_CLR_standardization_merged_conditions, main = "KNN Imputation, CLR Standardized PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_KNN_imputation_CLR_standardization
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_KNN_imputation_CLR_standardization = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (kNN imputation on TIC normalization, followed by CLR)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_KNN_imputation_CLR_standardization
+```
+
+
+### Random Forests Imputation, CLR Standardization
+```{r}
+# PCA_results_random_forests_imputation_CLR_standardization = prcomp(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_random_forests_imputation_CLR_standardization = autoplot(PCA_results_random_forests_imputation_CLR_standardization, data = random_forests_imputation_CLR_standardization_merged_conditions, main = "Random Forests Imputation, CLR Standardized PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+# 
+# PCA_plot_random_forests_imputation_CLR_standardization
+```
+
+```{r}
+# Perform PCA
+pca_result <- prcomp(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)][,-c(6, 181, 1759, 1799, 1812, 1821, 1917)], scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_result$x[, 1],
+  PC2 = pca_result$x[, 2],
+  Concentration = feature_table_merged_conditions$Conditions
+)
+pca_data$Concentration <- as.character(pca_data$Concentration)
+pca_data
+
+#pca_data$Concentration <- ifelse(pca_data$Concentration == "Allmix_BK_10pM", "10 pM", pca_data$Concentration)
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10pM"] <- "10 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100pM"] <- "100 pM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1nM"] <- "1 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10nM"] <- "10 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_100nM"] <- "100 nM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_1uM"] <- "1 uM"
+pca_data$Concentration[pca_data$Concentration == "Allmix_BK_10uM"] <- "10 uM"
+pca_data$Concentration = factor(pca_data$Concentration, levels = c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) 
+pca_data
+
+variance_explained <- summary(pca_result)$importance[2, 1:2] * 100
+
+PCA_plot_random_forests_imputation_CLR_standardization = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  ggtitle("PCA (R.F. imputation on TIC normalization, followed by CLR)") +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+PCA_plot_random_forests_imputation_CLR_standardization
+```
+### Extract legend
+```{r}
+legend_plot = ggplot(pca_data, aes(x = PC1, y = PC2, color = Concentration, fill = Concentration)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #ggforce::geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (", round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (", round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1)) +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 1))  # Set the legend to one row
+legend_plot
+
+pca_legend = get_legend(legend_plot)
+pca_legend
+```
+
+
+### Merged Plots
+```{r}
+library(gridGraphics)
+pca_plots_grid1 = cowplot::plot_grid(PCA_plot_raw, PCA_plot_TIC_normalization, PCA_plot_CLR_transformation, PCA_plot_RCLR_transformation_min_imputation, labels = c("A", "B", "C", "D"))
+
+pca_plots_grid1 = plot_grid(pca_plots_grid1, pca_legend, ncol = 1, rel_heights = c(1, 0.05))
+pca_plots_grid1
+
+ggsave("pca_plots_grid1.png", pca_plots_grid1, width = 12, height = 12, units = "in", dpi = 1000)
+ggsave("pca_plots_grid1.svg", pca_plots_grid1, width = 12, height = 12, units = "in", dpi = 1000)
+```
+
+```{r}
+# pca_plots_grid2 = cowplot::plot_grid(PCA_plot_RCLR_transformation_random_forests_imputation, PCA_plot_RCLR_transformation_KNN_imputation, PCA_plot_random_forests_imputation_CLR_standardization, PCA_plot_KNN_imputation_CLR_standardization, labels = c("A", "B", "C", "D"))
+
+pca_plots_grid2 = cowplot::plot_grid(PCA_plot_RCLR_transformation_KNN_imputation, PCA_plot_RCLR_transformation_random_forests_imputation, PCA_plot_KNN_imputation_CLR_standardization, PCA_plot_random_forests_imputation_CLR_standardization , labels = c("A", "B", "C", "D"))
+
+pca_plots_grid2 = plot_grid(pca_plots_grid2, pca_legend, ncol = 1, rel_heights = c(1, 0.05))
+pca_plots_grid2
+
+ggsave("pca_plots_grid2.png", pca_plots_grid2, width = 12, height = 12, units = "in", dpi = 1000)
+ggsave("pca_plots_grid2.svg", pca_plots_grid2, width = 12, height = 12, units = "in", dpi = 1000)
+```
+
+## Box Plots
+### 3153
+#### Raw
+```{r}
+boxplot_raw_3153 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log(feature_table_merged_conditions$`X3153` + 1), fill = Conditions)) +
+  ggtitle("Estrone (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  xlab("Concentration") +
+  ylab("ln(signal + 1)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) 
+boxplot_raw_3153
+```
+#### TIC
+```{r}
+boxplot_TIC_normalization_3153 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = log(feature_table_TIC_normalization_merged_conditions$`X3153` + 1e-12), fill = Conditions)) +
+  ggtitle("Estrone (TIC-normalized data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  xlab("Concentration") +
+  ylab("ln(signal/TIC + 1e-12)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold")) 
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+#0.000000000001
+boxplot_TIC_normalization_3153
+#ggsave("3151_ps_1.png", boxplot_TIC_normalization_3153, dpi = 1000, width = 8, height = 4.5, units = "in")
+```
+
+#### CLR
+```{r}
+boxplot_CLR_standardization_3153 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X3153`, fill = Conditions)) +
+  ggtitle("Estrone (TIC-CLR transformed data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+boxplot_CLR_standardization_3153
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+boxplot_RCLR_standardization_min_imputation_3153 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$`X3153`, fill = Conditions)) +
+  ggtitle("Estrone (TIC-RCLR transformation, min imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+boxplot_RCLR_standardization_min_imputation_3153
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+boxplot_RCLR_standardization_KNN_imputation_3153 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X3153`, fill = Conditions)) +
+  ggtitle("Estrone (TIC-RCLR transformation, kNN imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+boxplot_RCLR_standardization_KNN_imputation_3153
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+boxplot_RCLR_standardization_random_forests_imputation_3153 = ggplot(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$`X3153`, fill = Conditions)) +
+  ggtitle("Estrone (TIC-RCLR transformation, R.F. imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+boxplot_RCLR_standardization_random_forests_imputation_3153
+```
+
+#### Merged Plots
+```{r}
+library(cowplot)
+grid_boxplots_3153 = cowplot::plot_grid(boxplot_raw_3153, boxplot_TIC_normalization_3153, boxplot_CLR_standardization_3153, boxplot_RCLR_standardization_min_imputation_3153, boxplot_RCLR_standardization_KNN_imputation_3153, boxplot_RCLR_standardization_random_forests_imputation_3153, labels = c("A", "B", "C", "D", "E", "F"))
+grid_boxplots_3153 = add_sub(grid_boxplots_3153, "Concentration")
+grid_boxplots_3153
+ggsave("3153_grid_boxplots.png", grid_boxplots_3153, width = 16, height = 9, units = "in", dpi = 1000)
+ggsave("3153_grid_boxplots.svg", grid_boxplots_3153, width = 16, height = 9, units = "in", dpi = 1000)
+```
+
+### 1030i
+#### Raw
+```{r}
+boxplot_raw_1030 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log(feature_table_merged_conditions$`X1030` + 1), fill = Conditions)) +
+  ggtitle("Aspartame (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln(signal + 1)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_raw_1030
+```
+#### TIC
+```{r}
+boxplot_TIC_normalization_1030 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = log(feature_table_TIC_normalization_merged_conditions$`X1030` + 0.000000000001), fill = Conditions)) +
+  ggtitle("Aspartame (TIC-normalized data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln(signal/TIC + 1e-12)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold")) 
+boxplot_TIC_normalization_1030
+```
+
+#### CLR
+```{r}
+boxplot_CLR_standardization_1030 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X1030`, fill = Conditions)) +
+  ggtitle("Aspartame (TIC-CLR transformed data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_CLR_standardization_1030
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+boxplot_RCLR_standardization_min_imputation_1030 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$`X1030`, fill = Conditions)) +
+  ggtitle("Aspartame (TIC-RCLR transformation, min imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_RCLR_standardization_min_imputation_1030
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+boxplot_RCLR_standardization_KNN_imputation_1030 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X1030`, fill = Conditions)) +
+  ggtitle("Aspartame (TIC-RCLR transformation, kNN imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_RCLR_standardization_KNN_imputation_1030
+
+#plot_data = ggplot_build(boxplot_RCLR_standardization_KNN_imputation_1030)
+#colors <- plot_data$data[[1]]$colour
+
+#gg_colors <- ggplot_build(boxplot_RCLR_standardization_KNN_imputation_1030)$data[[1]]$colour
+#gg_colors
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+boxplot_RCLR_standardization_random_forests_imputation_1030 = ggplot(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$`X1030`, fill = Conditions)) +
+  ggtitle("Aspartame (TIC-RCLR transformation, R.F. imputation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") +
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_RCLR_standardization_random_forests_imputation_1030
+```
+
+#### Merged Plots
+```{r}
+library(cowplot)
+grid_boxplots_1030 = cowplot::plot_grid(boxplot_raw_1030, boxplot_TIC_normalization_1030, boxplot_CLR_standardization_1030, boxplot_RCLR_standardization_min_imputation_1030, boxplot_RCLR_standardization_KNN_imputation_1030, boxplot_RCLR_standardization_random_forests_imputation_1030, labels = c("A", "B", "C", "D", "E", "F"))
+grid_boxplots_1030 = add_sub(grid_boxplots_1030, "Concentration")
+ggsave("1030_grid_boxplots.png", grid_boxplots_1030, width = 16, height = 9, units = "in", dpi = 1000)
+ggsave("1030_grid_boxplots.svg", grid_boxplots_3153, width = 16, height = 9, units = "in", dpi = 1000)
+```
+
+```{r}
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+```
+
+### Final Log Plots - 1872
+```{r}
+Concentrations_merged <- c(0.00000000001, 0.00000000001, 0.00000000001,
+                      0.0000000001, 0.0000000001, 0.0000000001,
+                      0.000000001, 0.000000001, 0.000000001,
+                      0.00000001, 0.00000001, 0.00000001,
+                      0.0000001, 0.0000001, 0.0000001,
+                      0.000001, 0.000001, 0.000001,
+                      0.00001, 0.00001, 0.00001)
+print(Concentrations_merged)
+  
+Signals = feature_table_RCLR_standardized_merged_conditions[["X1872_i"]]
+Signals[Signals == 0] = NA
+print(Signals)
+  
+data_frame = data.frame(Concentrations = Concentrations_merged)
+data_frame[["X1872_i"]] = Signals
+  
+print(data_frame)
+  
+model <- lm(data_frame[, 2] ~ log(Concentrations), data = data_frame, na.action = "na.omit")
+
+coefficients <- coef(model)
+intercept <- coefficients[1]
+slope <- coefficients[2]
+
+formula_string <- paste0("y = ", round(intercept, 2), " + ", round(slope, 2), " * ln(x)")
+formula_string
+  
+for (row in 1:nrow(data_frame)) {
+  print(data_frame[row, 2])
+  if (is.na(data_frame[row, 2])) {
+    data_frame[row, 2] = coef(model)[1] + (coef(model)[2] * log(data_frame[row, 1]))
+  }
+}
+  
+print(data_frame)
+```
+
+```{r}
+log_imp_point_1872 = ggplot(data_frame, aes(x = Concentrations, y = data_frame[, 2], colour = Concentrations)) +
+  ggtitle("C17 Sphingosine logarithmic regression (TIC-RCLR transformation)") +
+  geom_point(size=3, show.legend = FALSE) +
+  geom_smooth(method = "lm", formula = y ~ log(x), se = FALSE, color = "black") +
+  scale_colour_gradientn(colours = c("#F8766D", "#C49A00", "#53B400", "#00C094", "#00B6EB", "#A58AFF", "#FB61D7"),
+                         values = rescale(c(1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5))) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  annotate("text", x = 0, y = 5.6, label = formula_string, hjust = 0, size = 5) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylab("ln((signal/TIC)/GM)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+log_imp_point_1872
+```
+
+```{r}
+library(ggplot2)
+data_frame$Concentrations = Conditions
+data_frame
+data_frame$Concentrations = factor(data_frame$Concentrations, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) 
+
+boxplot_RCLR_1872 = ggplot(data_frame, aes(x = Concentrations, y = X1872_i, fill = Concentrations)) +
+  ggtitle("C17 Sphingosine (TIC-RCLR transformation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ylab("ln((signal/TIC)/GM)") + 
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+boxplot_RCLR_1872
+```
+
+
+### Final Log Plots - 1030
+```{r}
+Concentrations_merged <- c(0.00000000001, 0.00000000001, 0.00000000001,
+                      0.0000000001, 0.0000000001, 0.0000000001,
+                      0.000000001, 0.000000001, 0.000000001,
+                      0.00000001, 0.00000001, 0.00000001,
+                      0.0000001, 0.0000001, 0.0000001,
+                      0.000001, 0.000001, 0.000001,
+                      0.00001, 0.00001, 0.00001)
+print(Concentrations_merged)
+  
+Signals = feature_table_RCLR_standardized_merged_conditions[["X1030_i"]]
+Signals[Signals == 0] = NA
+print(Signals)
+  
+data_frame2 = data.frame(Concentrations = Concentrations_merged)
+data_frame2[["X1030_i"]] = Signals
+  
+print(data_frame2)
+  
+model <- lm(data_frame2[, 2] ~ log(Concentrations), data = data_frame2, na.action = "na.omit")
+
+coefficients <- coef(model)
+intercept <- coefficients[1]
+slope <- coefficients[2]
+
+formula_string <- paste0("y = ", round(intercept, 2), " + ", round(slope, 2), " * ln(x)")
+formula_string
+  
+for (row in 1:nrow(data_frame2)) {
+  print(data_frame2[row, 2])
+  if (is.na(data_frame2[row, 2])) {
+    data_frame2[row, 2] = coef(model)[1] + (coef(model)[2] * log(data_frame2[row, 1]))
+  }
+}
+  
+print(data_frame2)
+```
+
+```{r}
+library(scales)
+log_imp_point = ggplot(data_frame2, aes(x = Concentrations, y = data_frame2[, 2], colour = Concentrations)) +
+  ggtitle("Aspartame logarithmic regression imputation (TIC-RCLR transformation)") +
+  geom_point(size=3, show.legend = FALSE) +
+  geom_smooth(method = "lm", formula = y ~ log(x), se = FALSE, color = "black") +
+  scale_colour_gradientn(colours = c("#F8766D", "#C49A00", "#53B400", "#00C094", "#00B6EB", "#A58AFF", "#FB61D7"),
+                         values = rescale(c(1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5))) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  annotate("text", x = 0, y = 5.6, label = formula_string, hjust = 0, size = 5) +
+  ylab("ln((signal/TIC)/GM)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+log_imp_point
+```
+
+```{r}
+Conditions = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$Conditions
+
+data_frame2$Concentrations = Conditions
+data_frame2
+
+boxplot_RCLR_standardization_log_regression_imp_1030 = ggplot(data_frame2, aes(x = Conditions, y = X1030_i, fill = Conditions)) +
+  ggtitle("Aspartame logarithmic regression imputation (TIC-RCLR transformation)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylab("ln((signal/TIC)/GM)") + 
+  scale_x_discrete(labels=c("10 pM", "100 pM", "1 nM", "10 nM", "100 nM", "1 uM", "10 uM")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+boxplot_RCLR_standardization_log_regression_imp_1030
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+log_reg_plots = cowplot::plot_grid(log_imp_point_1872, boxplot_RCLR_1872, log_imp_point, boxplot_RCLR_standardization_log_regression_imp_1030, labels = c("A", "B", "C", "D"))
+log_reg_plots = add_sub(log_reg_plots, "Concentration")
+ggsave("log_reg_plots.png", log_reg_plots, width = 16, height = 9, units = "in", dpi = 1000)
+ggsave("log_reg_plots.svg", log_reg_plots, width = 16, height = 9, units = "in", dpi = 1000)
+```
+

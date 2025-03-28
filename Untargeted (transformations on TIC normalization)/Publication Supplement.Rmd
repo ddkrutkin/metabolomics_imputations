@@ -1,0 +1,1606 @@
+---
+title: "No Metabolite Filtering Data Exploration"
+author: "Dennis Dimitri Krutkin"
+date: "2024-02-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(include = TRUE)
+#knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(stringr)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggforce)
+library(ggfortify)
+library(ggpubr)
+library(vegan)
+library(missForest)
+library(impute)
+library(VIM)
+library(laeken)
+library(cowplot)
+```
+
+```{r}
+getwd()
+```
+
+
+## Source data cleaning and prep
+
+```{r}
+#ft = feature table
+ft_source <- read.csv("nist_data.csv")
+ft_source
+
+ft_source <- select(ft_source, -X)
+ft_source
+
+ft_source <- column_to_rownames(ft_source, var = "Sample")
+ft_source
+
+names(ft_source)[names(ft_source) == "Conditions"] <- "Sample"
+ft_source
+
+#Encode Sample as a factor with discrete levels
+#Convert "Sample" variable to a factor, specifying the correct levels (order) of
+#concentrations for all subsequent plotting
+ft_source$Sample <- factor(ft_source$Sample,
+                           levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                                      14, 15, 16, 17, 18))
+ft_source
+```
+
+## TIC Normalization
+```{r}
+# Calculate the sum of numeric values across each row in the TIC_normalized
+# data frame and create a 'TIC' column with the result, excluding any NA values
+# during the summation process
+ft_tic <- ft_source %>%
+  rowwise() %>%
+  mutate(TIC = sum(c_across(where(is.numeric)), na.rm = TRUE))
+ft_tic
+
+# Normalize the numeric columns in the TIC_normalized data frame by dividing
+# each element by the sum of its respective row ('TIC'), and then remove the
+# original 'TIC' column from the data frame.
+ft_tic <- ft_tic %>%
+  mutate(across(where(is.numeric), ~ . / TIC)) %>%
+  dplyr::select(-TIC)
+ft_tic
+
+ft_tic <- as.data.frame(ft_tic)
+row.names(ft_tic) <- row.names(ft_source)
+ft_tic
+```
+
+## CLR
+```{r}
+samples <- ft_source$Sample
+
+ft_tic_clr <- select(ft_tic, -Sample) %>% #Select all columns except "Sample"
+  decostand(method = "clr", pseudocount = 1 * 10^-12) #Perform CLR transform
+ft_tic_clr
+
+ft_tic_clr <- cbind(samples, ft_tic_clr) #Re-add samples column
+names(ft_tic_clr)[names(ft_tic_clr) == "samples"] <- "Sample" #Rename column
+ft_tic_clr
+```
+
+```{r}
+for (psuedocount_iteration in c(1, 1*10^-1, 1*10^-2, 1*10^-3, 1*10^-4, 1*10^-5, 1*10^-6, 1*10^-7, 1*10^-8, 1*10^-9, 1*10^-10, 1*10^-11, 1*10^-12)) {
+  #par(mfrow = c(1, 1))
+  print(psuedocount_iteration)
+  
+  #Sample = feature_table_merged_conditions$Sample
+  
+  #feature_table_CLR_standardized_merged_conditions = select(feature_table_TIC_normalization_merged_conditions, -Sample) %>% decostand(method = "clr", pseudocount = psuedocount_iteration)
+  #feature_table_CLR_standardized_merged_conditions
+  
+  #feature_table_CLR_standardized_merged_conditions = cbind(Sample, feature_table_CLR_standardized_merged_conditions)
+  #feature_table_CLR_standardized_merged_conditions
+  
+  boxplot_raw_182 = ggplot(ft_source, aes(x = Sample, y = log(ft_source$`X182` + 1), fill = Sample)) +
+    ggtitle("182 (raw data, log10 transformed)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylab("log10(182 + 1)") 
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  #print(boxplot_raw_182)
+  
+  boxplot_TIC_normalization_182 = ggplot(ft_tic, aes(x = Sample, y = log(ft_tic$`X182` + psuedocount_iteration), fill = Sample)) +
+    ggtitle("182 (TIC-normalized)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylab(paste("log(182", psuedocount_iteration, ")")) 
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  #print(boxplot_TIC_normalization_182)
+  
+  boxplot_CLR_standardization_182 = ggplot(ft_tic_clr, aes(x = Sample, y = ft_tic_clr$`X182`, fill = Sample)) +
+    ggtitle("182 (CLR-standardized)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylab("182") 
+  #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  #print(boxplot_CLR_standardization_182)
+  #dev.new()
+  print(cowplot::plot_grid(boxplot_raw_182, boxplot_TIC_normalization_182, boxplot_CLR_standardization_182))
+  #with_png(cowplot::plot_grid(boxplot_raw_182, boxplot_TIC_normalization_182, boxplot_CLR_standardization_182))
+}
+```
+
+
+## RCLR Standardization, followed by imputation
+### RCLR Standardization
+```{r}
+ft_tic_rclr <- select(ft_tic, -Sample) %>% #Select all columns except "Sample"
+  decostand(method = "rclr") #Perform RCLR transform
+ft_tic_rclr
+
+ft_tic_rclr <- cbind(samples, ft_tic_rclr) #Re-add samples column
+names(ft_tic_rclr)[names(ft_tic_rclr) == "samples"] <- "Sample" #Rename column
+ft_tic_rclr
+```
+
+### Minimum value imputation
+```{r}
+ft_tic_rclr_min <- ft_tic_rclr
+ft_tic_rclr_min[ft_tic_rclr_min == 0] <- min(ft_tic_rclr[2:ncol(ft_tic_rclr)])
+ft_tic_rclr_min
+```
+
+### kNN Imputation (VIM)
+#### Only impute missing values from true data
+```{r}
+knn_input_ft_tic_rclr <- ft_tic_rclr
+
+knn_input_ft_tic_rclr[knn_input_ft_tic_rclr == 0] <- NA #Substitute 0 with NA
+knn_input_ft_tic_rclr
+```
+
+```{r}
+#This step took ~3 hours
+ft_tic_rclr_knn <- kNN(knn_input_ft_tic_rclr, #Impute missing values for input
+                       k = 3, # Use values of 3 nearest neighbors
+                       numFun = mean, # Mean of nearest neighbors
+                       useImputedDist = FALSE, #Dont use imp values for more imp
+                       imp_var = FALSE) #Omit columns detailing missing info
+ft_tic_rclr_knn
+rm(knn_input_ft_tic_rclr) #Remove input table to avoid confusion
+```
+
+```{r}
+ft_tic_rclr_knn
+row.names(ft_tic_rclr_knn) <- row.names(ft_source) #Set row names
+ft_tic_rclr_knn
+```
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+ft_tic_rclr_rf <- ft_tic_rclr
+ft_tic_rclr_rf
+
+#Changes zeros in the data frame to be imputed to NA values
+ft_tic_rclr_rf[ft_tic_rclr_rf == 0] <- NA
+ft_tic_rclr_rf
+```
+
+```{r, include = FALSE}
+#This step takes the longest - about 4 minutes
+ft_tic_rclr_rf_results <- missForest(xmis = ft_tic_rclr_rf,
+                                     verbose = FALSE)
+```
+
+```{r}
+ft_tic_rclr_rf <- ft_tic_rclr_rf_results$ximp
+ft_tic_rclr_rf
+```
+
+## Imputation, followed by CLR transformation
+### kNN Imputation (VIM)
+```{r}
+knn_input_ft_tic <- ft_tic
+knn_input_ft_tic
+
+knn_input_ft_tic[knn_input_ft_tic == 0] <- NA #Substitute 0 values with NA
+knn_input_ft_tic
+```
+
+#### Only impute missing values from true data
+```{r}
+#This step takes about 5 minutes
+ft_tic_knn <- kNN(knn_input_ft_tic,
+                  k = 3,
+                  numFun = mean,
+                  useImputedDist = FALSE,
+                  imp_var = FALSE)
+ft_tic_knn
+rm(knn_input_ft_tic)
+```
+
+```{r}
+ft_tic_knn_clr <- decostand(ft_tic_knn[2:ncol(ft_tic_knn)],
+                            method = "clr")
+ft_tic_knn_clr
+
+row.names(ft_tic_knn_clr) <- row.names(ft_source) #Set row names for imputed df
+ft_tic_knn_clr
+
+ft_tic_knn_clr <- cbind(samples, ft_tic_knn_clr)
+ft_tic_knn_clr
+
+names(ft_tic_knn_clr)[names(ft_tic_knn_clr) == "samples"] <- "Sample"
+ft_tic_knn_clr
+```
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+ft_tic_rf <- ft_tic
+ft_tic_rf
+
+#Changes zeros in the data frame to be imputed to NA values
+ft_tic_rf[ft_tic_rf == 0] <- NA
+ft_tic_rf
+```
+
+```{r}
+#This step takes the longest - about 4 minutes
+ft_tic_rf_results <- missForest(xmis = ft_tic_rf,
+                                verbose = FALSE)
+```
+
+```{r}
+ft_tic_rf <- ft_tic_rf_results$ximp
+ft_tic_rf
+
+ft_tic_rf_clr <- decostand(ft_tic_rf[2:ncol(ft_tic_rf)],
+                           method = "clr")
+
+ft_tic_rf_clr <- cbind(samples, ft_tic_rf_clr)
+ft_tic_rf_clr
+
+names(ft_tic_rf_clr)[names(ft_tic_rf_clr) == "samples"] <- "Sample"
+ft_tic_rf_clr
+```
+
+## PCA Plots
+### Check which features/metabolites have 0 variance
+```{r}
+# Check which columns have zero variance
+# Can't use "scale." in prcomp for columns which have zero variance:
+which(apply(ft_source[2:ncol(ft_source)], 2, var) == 0)
+which(apply(ft_tic[2:ncol(ft_tic)], 2, var) == 0)
+which(apply(ft_tic_clr[2:ncol(ft_tic_clr)], 2, var) == 0)
+which(apply(ft_tic_rclr[2:ncol(ft_tic_rclr)], 2, var) == 0)
+which(apply(ft_tic_rclr_min[2:ncol(ft_tic_rclr_min)], 2, var) == 0)
+which(apply(ft_tic_rclr_knn[2:ncol(ft_tic_rclr_knn)], 2, var) == 0)
+which(apply(ft_tic_rclr_rf[2:ncol(ft_tic_rclr_rf)], 2, var) == 0)
+which(apply(ft_tic_knn_clr[2:ncol(ft_tic_knn_clr)], 2, var) == 0)
+which(apply(ft_tic_rf_clr[2:ncol(ft_tic_rf_clr)], 2, var) == 0)
+```
+
+### Create diet vector for plotting
+```{r}
+diet <- c("Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian")
+diet <- as.factor(diet)
+diet
+```
+
+### Raw
+```{r}
+# Perform PCA
+pca_results_source <-
+  prcomp(ft_source[2:ncol(ft_source)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                           4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_source$x[, 1],
+  PC2 = pca_results_source$x[, 2],
+  Sample = ft_source$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_source)$importance[2, 1:2] * 100
+
+#aes(label = Sample), con.type = "straight", label.buffer = unit(0, "mm"), con.cap = unit(0, "mm"),
+plot_pca_source <- ggplot(pca_data,
+                          aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                              shape = Diet)) +
+  ggtitle("PCA (raw data)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_source
+```
+
+### TIC
+```{r}
+# Perform PCA
+pca_results_tic <-
+  prcomp(ft_tic[2:ncol(ft_tic)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                     4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic$x[, 1],
+  PC2 = pca_results_tic$x[, 2],
+  Sample = ft_source$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic)$importance[2, 1:2] * 100
+
+plot_pca_tic <- ggplot(pca_data,
+                       aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                           shape = Diet)) +
+  ggtitle("PCA (TIC-normalized data)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic
+```
+
+### TIC-CLR
+```{r}
+# Perform PCA
+pca_results_tic_clr <-
+  prcomp(ft_tic_clr[2:ncol(ft_tic_clr)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                             4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_clr$x[, 1],
+  PC2 = pca_results_tic_clr$x[, 2] * -1,
+  Sample = ft_tic_clr$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_clr)$importance[2, 1:2] * 100
+
+plot_pca_tic_clr <- ggplot(pca_data,
+                           aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                               shape = Diet)) +
+  ggtitle("PCA (TIC-CLR transformed data)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_clr
+```
+
+### TIC-RCLR Transformation, Minimum value imputation
+```{r}
+# Perform PCA
+pca_results_tic_rclr_min <-
+  prcomp(ft_tic_rclr_min[2:ncol(ft_tic_rclr_min)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_rclr_min$x[, 1],
+  PC2 = pca_results_tic_rclr_min$x[, 2],
+  Sample = ft_tic_rclr_min$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_rclr_min)$importance[2, 1:2] * 100
+
+plot_pca_tic_rclr_min <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (TIC-RCLR transformed data, min-value imputation)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_rclr_min
+```
+
+```{r}
+ggsave("Figure_6D.png", plot_pca_tic_rclr_min, width = 6, height = 6,
+       units = "in", dpi = 1000)
+```
+
+
+### TIC-RCLR Transformation, KNN Imputation
+```{r}
+# Perform PCA
+pca_results_tic_rclr_knn <-
+  prcomp(ft_tic_rclr_knn[2:ncol(ft_tic_rclr_knn)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_rclr_knn$x[, 1],
+  PC2 = pca_results_tic_rclr_knn$x[, 2],
+  Sample = ft_tic_rclr_min$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_rclr_knn)$importance[2, 1:2] * 100
+
+plot_pca_tic_rclr_knn <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (TIC-RCLR transformed data, kNN imputation)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_rclr_knn
+```
+
+### TIC-RCLR Transformation, Random Forests Imputation
+```{r}
+# Perform PCA
+pca_results_tic_rclr_rf <-
+  prcomp(ft_tic_rclr_rf[2:ncol(ft_tic_rclr_rf)][, -c(2225, 2628, 2853, 3062,
+                                                     3299, 3622, 4122, 4126,
+                                                     4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_rclr_rf$x[, 1],
+  PC2 = pca_results_tic_rclr_rf$x[, 2],
+  Sample = ft_tic_rclr_min$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_rclr_rf)$importance[2, 1:2] * 100
+
+plot_pca_tic_rclr_rf <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                             fill = Sample, shape = Diet)) +
+  ggtitle("PCA (TIC-RCLR transformed data, Random Forest imputation)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_rclr_rf
+```
+
+### TIC Normalization, KNN Imputation, CLR Transformation
+```{r}
+# Perform PCA
+pca_results_tic_knn_clr <-
+  prcomp(ft_tic_knn_clr[2:ncol(ft_tic_knn_clr)][, -c(2225, 2628, 2853, 3062,
+                                                     3299, 3622, 4122, 4126,
+                                                     4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_knn_clr$x[, 1],
+  PC2 = pca_results_tic_knn_clr$x[, 2],
+  Sample = ft_tic_knn_clr$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_knn_clr)$importance[2, 1:2] * 100
+
+plot_pca_tic_knn_clr <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                             fill = Sample, shape = Diet)) +
+  ggtitle("PCA (kNN imputation on TIC normalization, followed by CLR)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_knn_clr
+```
+
+### TIC Normalization, Random Forests Imputation, CLR Transformation
+```{r}
+# Perform PCA
+pca_results_tic_rf_clr <-
+  prcomp(ft_tic_rf_clr[2:ncol(ft_tic_rf_clr)][, -c(2225, 2628, 2853, 3062,
+                                                     3299, 3622, 4122, 4126,
+                                                     4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic_rf_clr$x[, 1],
+  PC2 = pca_results_tic_rf_clr$x[, 2],
+  Sample = ft_tic_rf_clr$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic_rf_clr)$importance[2, 1:2] * 100
+
+plot_pca_tic_rf_clr <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                             fill = Sample, shape = Diet)) +
+  ggtitle("PCA (R.F. imputation on TIC normalization, followed by CLR)") +
+  theme_bw() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic_rf_clr
+```
+
+### Extract legend
+```{r}
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_source$x[, 1],
+  PC2 = pca_results_source$x[, 2],
+  Sample = ft_source$Sample,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_source)$importance[2, 1:2] * 100
+
+plot_pca_legend_source <- ggplot(pca_data,
+                                 aes(x = PC1, y = PC2, color = Sample,
+                                     fill = Sample,
+                                     shape = Diet)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(aes(label = Sample), alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "bottom",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_legend = get_legend(plot_pca_legend_source)
+plot_pca_legend
+
+rm(plot_pca_legend_source)
+```
+
+### Merged Plots
+```{r}
+pca_plots_grid1 = plot_grid(plot_pca_source, plot_pca_tic, plot_pca_tic_clr,
+                            plot_pca_tic_rclr_min,
+                            labels = c("A", "B", "C", "D"))
+
+pca_plots_grid1 = plot_grid(pca_plots_grid1, plot_pca_legend, ncol = 1,
+                            rel_heights = c(1, 0.05))
+pca_plots_grid1
+
+ggsave("pca_plots_grid1.png", pca_plots_grid1, width = 12, height = 12,
+       units = "in", dpi = 1000)
+ggsave("pca_plots_grid1.svg", pca_plots_grid1, width = 12, height = 12,
+       units = "in", dpi = 1000)
+```
+
+```{r}
+pca_plots_grid2 = plot_grid(plot_pca_tic_rclr_knn, plot_pca_tic_rclr_rf,
+                            plot_pca_tic_knn_clr, plot_pca_tic_rf_clr,
+                            labels = c("A", "B", "C", "D"))
+
+pca_plots_grid2 = plot_grid(pca_plots_grid2, plot_pca_legend, ncol = 1,
+                            rel_heights = c(1, 0.05))
+pca_plots_grid2
+
+ggsave("pca_plots_grid2.png", pca_plots_grid2, width = 12, height = 12,
+       units = "in", dpi = 1000)
+ggsave("pca_plots_grid2.svg", pca_plots_grid2, width = 12, height = 12,
+       units = "in", dpi = 1000)
+```
+
+## Box Plots
+### Find metabolites where >90% of data is detected:
+```{r}
+# Function to find column names with >= 90% non-zero values
+#get_columns_with_nonzero_data <- function(df, lower_threshold = 0.9, upper_threshold = 0.96) {
+  # Calculate the proportion of non-zero values for each column
+  #nonzero_proportion <- colMeans(df != 0)
+  
+  # Get the column names where the proportion is >= lower_threshold but < upper_threshold
+  #selected_columns <- names(nonzero_proportion[nonzero_proportion >= lower_threshold & nonzero_proportion < upper_threshold])
+  
+  #return(selected_columns)
+#}
+get_columns_with_exact_nonzero <- function(df, nonzero_count = 49, total_count = 54) {
+  # Calculate the number of non-zero values for each column
+  nonzero_counts <- colSums(df != 0)
+  
+  # Get the column names where the non-zero count matches the target count
+  selected_columns <- names(nonzero_counts[nonzero_counts == nonzero_count])
+  
+  return(selected_columns)
+}
+
+get_columns_with_exact_nonzero(ft_source)
+```
+
+```{r}
+#3736
+ggplot(cbind(diet, ft_source), aes(x = Sample, y = log(ft_source$`X3736` + 1), fill = Sample)) +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+### 3736 - Mostly Non-missing MCAR
+#### Source
+```{r}
+plot_boxplot_source_3736 <-
+  ggplot(cbind(diet, ft_source), aes(x = Sample, y = log(X3736 + 1), 
+                                     fill = Sample)) +
+  ggtitle("M3736 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,10,1)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_3736
+```
+
+```{r}
+ggplot(cbind(diet, ft_source), aes(x = Sample, y = X3736, 
+                                     fill = Sample)) +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("log(signal + 1)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+```
+
+
+#### TIC
+```{r}
+plot_boxplot_tic_3736 <-
+  ggplot(cbind(diet, ft_tic), aes(x = Sample, y = log(X3736 + 1 * 10^-12), fill = Sample)) +
+  ggtitle("M3736 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-30, -10, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_3736
+```
+
+```{r}
+ggplot(cbind(diet, ft_tic), aes(x = Sample, y = X3736, fill = Sample)) +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free") +
+    ylab("log(signal/TIC + 1e-12)") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+```
+
+
+#### CLR
+```{r}
+plot_boxplot_tic_clr_3736 <-
+  ggplot(cbind(diet, ft_tic_clr), aes(x = Sample, y = X3736, fill = Sample)) +
+  ggtitle("M3736 (TIC-CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-15,1.5,1.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_3736
+```
+
+```{r}
+ggplot(cbind(diet, ft_tic_clr), aes(x = Sample, y = exp(X3736), fill = Sample)) +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free") +
+    ylab("log((signal/TIC)/GM)") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+```
+
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+plot_boxplot_tic_rclr_min_3736 <-
+  ggplot(cbind(diet, ft_tic_rclr_min), aes(x = Sample, y = X3736, fill = Sample)) +
+  ggtitle("M3736 (TIC-RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,-0.5,0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_3736
+```
+
+```{r}
+ggplot(cbind(diet, ft_tic_rclr_min), aes(x = Sample, y = exp(X3736), fill = Sample)) +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free") +
+    ylab("log((signal/TIC)/GM)") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+plot_boxplot_tic_rclr_knn_3736 <-
+  ggplot(cbind(diet, ft_tic_rclr_knn), aes(x = Sample, y = X3736, fill = Sample)) +
+  ggtitle("M3736 (TIC-RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-3.5,-0.5,0.5), limits = c(-3.5, -0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_3736
+```
+
+```{r}
+ggplot(cbind(diet, ft_tic_rclr_knn), aes(x = Sample, y = exp(X3736), fill = Sample)) +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free") +
+    ylab("log((signal/TIC)/GM)") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+plot_boxplot_tic_rclr_rf_3736 <-
+  ggplot(cbind(diet, ft_tic_rclr_rf), aes(x = Sample, y = X3736, fill = Sample)) +
+  ggtitle("M3736 (TIC-RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-3.5,-0.5,0.5), limits = c(-3.5, -0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_3736
+```
+
+#### Merged Plots
+```{r}
+plots_boxplot_3736 = plot_grid(plot_boxplot_source_3736, plot_boxplot_tic_3736, 
+                               plot_boxplot_tic_clr_3736, 
+                               plot_boxplot_tic_rclr_min_3736, 
+                               plot_boxplot_tic_rclr_knn_3736, 
+                               plot_boxplot_tic_rclr_rf_3736,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_3736 = add_sub(plots_boxplot_3736, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_3736.png", plots_boxplot_3736, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_3736.svg", plots_boxplot_3736, width = 18, height = 10.125, units = "in")
+```
+
+### 69 - 50/50 MCAR
+### Find metabolite with 50/50 detected:missing
+```{r}
+get_columns_with_exact_nonzero <- function(df, nonzero_count = 27, total_count = 54) {
+  # Calculate the number of non-zero values for each column
+  nonzero_counts <- colSums(df != 0)
+  
+  # Get the column names where the non-zero count matches the target count
+  selected_columns <- names(nonzero_counts[nonzero_counts == nonzero_count])
+  
+  return(selected_columns)
+}
+
+get_columns_with_exact_nonzero(ft_source)
+```
+
+```{r}
+#3736
+ggplot(cbind(diet, ft_source), aes(x = Sample, y = X336, fill = Sample)) +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+#### Raw
+```{r}
+plot_boxplot_source_69 <-
+  ggplot(cbind(diet, ft_source), aes(x = Sample, y = log(X69 + 1), 
+                                     fill = Sample)) +
+  ggtitle("M69 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_69
+```
+#### TIC
+```{r}
+plot_boxplot_tic_69 <-
+  ggplot(cbind(diet, ft_tic), aes(x = Sample, y = log(X69 + 1 * 10^-12), fill = Sample)) +
+  ggtitle("M69 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_69
+```
+
+#### CLR
+```{r}
+plot_boxplot_tic_clr_69 <-
+  ggplot(cbind(diet, ft_tic_clr), aes(x = Sample, y = X69, fill = Sample)) +
+  ggtitle("M69 (TIC-CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-16, 6, 2)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_69
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+plot_boxplot_tic_rclr_min_69 <-
+  ggplot(cbind(diet, ft_tic_rclr_min), aes(x = Sample, y = X69, fill = Sample)) +
+  ggtitle("M69 (TIC-RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,2.5,1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_69
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+plot_boxplot_tic_rclr_knn_69 <-
+  ggplot(cbind(diet, ft_tic_rclr_knn), aes(x = Sample, y = X69, fill = Sample)) +
+  ggtitle("M69 (TIC-RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(1.35,2.25,0.1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_69
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+plot_boxplot_tic_rclr_rf_69 <-
+  ggplot(cbind(diet, ft_tic_rclr_rf), aes(x = Sample, y = X69, fill = Sample)) +
+  ggtitle("M69 (TIC-RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(1.35,2.25,0.1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_69
+```
+
+#### Merged Plots
+```{r}
+plots_boxplot_69 = plot_grid(plot_boxplot_source_69, plot_boxplot_tic_69, 
+                               plot_boxplot_tic_clr_69, 
+                               plot_boxplot_tic_rclr_min_69, 
+                               plot_boxplot_tic_rclr_knn_69, 
+                               plot_boxplot_tic_rclr_rf_69,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_69 = add_sub(plots_boxplot_69, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_69.png", plots_boxplot_69, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_69.svg", plots_boxplot_69, width = 18, height = 10.125, units = "in")
+```
+
+### 336 - 50/50 MNAR
+#### Raw
+```{r}
+plot_boxplot_source_336 <-
+  ggplot(cbind(diet, ft_source), aes(x = Sample, y = log(X336 + 1), 
+                                     fill = Sample)) +
+  ggtitle("M336 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_336
+```
+
+```{r}
+ggplot(cbind(diet, ft_source), aes(x = Sample, y = X336, 
+                                     fill = Sample)) +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("log(signal + 1)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+```
+
+#### TIC
+```{r}
+plot_boxplot_tic_336 <-
+  ggplot(cbind(diet, ft_tic), aes(x = Sample, y = log(X336 + 1 * 10^-12), fill = Sample)) +
+  ggtitle("M336 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_336
+```
+
+```{r}
+ggsave("Figure_11B.png", plot_boxplot_tic_336, width = 8, height = 4.5,
+       units = "in", dpi = 1000)
+```
+
+```{r}
+ggplot(cbind(diet, ft_tic), aes(x = Sample, y = X336, fill = Sample)) +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free") +
+    ylab("log(signal/TIC + 1e-12)") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+```
+
+
+#### CLR
+```{r}
+plot_boxplot_tic_clr_336 <-
+  ggplot(cbind(diet, ft_tic_clr), aes(x = Sample, y = X336, fill = Sample)) +
+  ggtitle("M336 (TIC-CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_zoom(y = diet == 'Vegetarian') +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-15, 5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_336
+```
+
+```{r}
+ggsave("Figure_11C.png", plot_boxplot_tic_clr_336, width = 8, height = 4.5,
+       units = "in", dpi = 1000)
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+plot_boxplot_tic_rclr_min_336 <-
+  ggplot(cbind(diet, ft_tic_rclr_min), aes(x = Sample, y = X336, fill = Sample)) +
+  ggtitle("M336 (TIC-RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-4.5, 2.5, 1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_336
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+plot_boxplot_tic_rclr_knn_336 <-
+  ggplot(cbind(diet, ft_tic_rclr_knn), aes(x = Sample, y = X336, fill = Sample)) +
+  ggtitle("M336 (TIC-RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(1.9, 2.5, 0.05)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_336
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+plot_boxplot_tic_rclr_rf_336 <-
+  ggplot(cbind(diet, ft_tic_rclr_rf), aes(x = Sample, y = X336, fill = Sample)) +
+  ggtitle("M336 (TIC-RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(1.9, 2.5, 0.05)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_336
+```
+
+#### Merged Plots
+```{r}
+plots_boxplot_336 = plot_grid(plot_boxplot_source_336, plot_boxplot_tic_336, 
+                               plot_boxplot_tic_clr_336, 
+                               plot_boxplot_tic_rclr_min_336, 
+                               plot_boxplot_tic_rclr_knn_336, 
+                               plot_boxplot_tic_rclr_rf_336,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_336 = add_sub(plots_boxplot_336, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_336.png", plots_boxplot_336, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_336.svg", plots_boxplot_336, width = 18, height = 10.125, units = "in")
+```
+
+### 3206 - Mostly missing
+#### Find metabolites
+```{r}
+get_columns_with_exact_nonzero <- function(df, nonzero_count = 4, total_count = 54) {
+  # Calculate the number of non-zero values for each column
+  nonzero_counts <- colSums(df != 0)
+  
+  # Get the column names where the non-zero count matches the target count
+  selected_columns <- names(nonzero_counts[nonzero_counts == nonzero_count])
+  
+  return(selected_columns)
+}
+
+get_columns_with_exact_nonzero(ft_source)
+```
+
+#### Raw
+```{r}
+plot_boxplot_source_3206 <-
+  ggplot(cbind(diet, ft_source), aes(x = Sample, y = log(X3206 + 1), 
+                                     fill = Sample)) +
+  ggtitle("M3206 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_3206
+```
+#### TIC
+```{r}
+plot_boxplot_tic_3206 <-
+  ggplot(cbind(diet, ft_tic), aes(x = Sample, y = log(X3206 + 1 * 10^-12), fill = Sample)) +
+  ggtitle("M3206 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_3206
+```
+
+#### CLR
+```{r}
+plot_boxplot_tic_clr_3206 <-
+  ggplot(cbind(diet, ft_tic_clr), aes(x = Sample, y = X3206, fill = Sample)) +
+  ggtitle("M3206 (TIC-CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-15.5, 5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_3206
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+plot_boxplot_tic_rclr_min_3206 <-
+  ggplot(cbind(diet, ft_tic_rclr_min), aes(x = Sample, y = X3206, fill = Sample)) +
+  ggtitle("M3206 (TIC-RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,2.5,1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_3206
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+plot_boxplot_tic_rclr_knn_3206 <-
+  ggplot(cbind(diet, ft_tic_rclr_knn), aes(x = Sample, y = X3206, fill = Sample)) +
+  ggtitle("M3206 (TIC-RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+    scale_y_continuous(breaks=seq(1.18, 1.4, 0.02)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_3206
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+plot_boxplot_tic_rclr_rf_3206 <-
+  ggplot(cbind(diet, ft_tic_rclr_rf), aes(x = Sample, y = X3206, fill = Sample)) +
+  ggtitle("M3206 (TIC-RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln((signal/TIC)/GM)") +
+  scale_y_continuous(breaks=seq(1.18, 1.4, 0.02)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_3206
+```
+
+#### Merged Plots
+```{r}
+plots_boxplot_3206 = plot_grid(plot_boxplot_source_3206, plot_boxplot_tic_3206, 
+                               plot_boxplot_tic_clr_3206, 
+                               plot_boxplot_tic_rclr_min_3206, 
+                               plot_boxplot_tic_rclr_knn_3206, 
+                               plot_boxplot_tic_rclr_rf_3206,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_3206 = add_sub(plots_boxplot_3206, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_3206.png", plots_boxplot_3206, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_3206.svg", plots_boxplot_3206, width = 18, height = 10.125, units = "in")
+```
+
+

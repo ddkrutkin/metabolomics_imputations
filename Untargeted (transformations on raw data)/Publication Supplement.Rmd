@@ -1,0 +1,1725 @@
+---
+title: "No Metabolite Filtering Data Exploration"
+author: "Dennis Dimitri Krutkin"
+date: "2024-02-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(stringr)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggfortify)
+library(ggpubr)
+library(ggforce)
+library(vegan)
+library(missForest)
+library(impute)
+library(VIM)
+library(laeken)
+getwd()
+```
+
+```{r}
+feature_table_merged_conditions = read.csv("nist_data.csv")
+feature_table_merged_conditions
+
+feature_table_merged_conditions = select(feature_table_merged_conditions, -X)
+feature_table_merged_conditions
+
+feature_table_merged_conditions = column_to_rownames(feature_table_merged_conditions, var = "Sample")
+feature_table_merged_conditions
+```
+
+```{r}
+#Encode Conditions as a factor with discrete levels
+feature_table_merged_conditions$Conditions = factor(feature_table_merged_conditions$Conditions, levels = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_merged_conditions
+```
+
+## TIC Normalization
+```{r, include = FALSE}
+# Calculate the sum of numeric values across each row in the TIC_normalized data frame and create a 'TIC' column with the result, excluding any NA values during the summation process
+feature_table_TIC_normalization_merged_conditions <- feature_table_merged_conditions %>% rowwise() %>% mutate(TIC = sum(c_across(where(is.numeric)), na.rm = TRUE))
+feature_table_TIC_normalization_merged_conditions
+
+#Normalize the numeric columns in the TIC_normalized data frame by dividing each element by the sum of its respective row ('TIC'), and then remove the original 'TIC' column from the data frame.
+feature_table_TIC_normalization_merged_conditions <- feature_table_TIC_normalization_merged_conditions %>%  mutate(across(where(is.numeric), ~ ./TIC)) %>% dplyr::select(-TIC)
+feature_table_TIC_normalization_merged_conditions
+
+feature_table_TIC_normalization_merged_conditions = as.data.frame(feature_table_TIC_normalization_merged_conditions)
+row.names(feature_table_TIC_normalization_merged_conditions) = row.names(feature_table_merged_conditions)
+feature_table_TIC_normalization_merged_conditions
+```
+
+## CLR
+```{r}
+Conditions = feature_table_merged_conditions$Conditions
+
+feature_table_CLR_standardized_merged_conditions = select(feature_table_merged_conditions, -Conditions) %>% decostand(method = "clr", pseudocount = 1)
+feature_table_CLR_standardized_merged_conditions
+
+feature_table_CLR_standardized_merged_conditions = cbind(Conditions, feature_table_CLR_standardized_merged_conditions)
+feature_table_CLR_standardized_merged_conditions
+```
+
+## RCLR Standardization, followed by imputation
+### RCLR Standardization
+```{r}
+feature_table_RCLR_standardized_merged_conditions = select(feature_table_merged_conditions, -Conditions) %>% decostand(method = "rclr")
+feature_table_RCLR_standardized_merged_conditions
+
+feature_table_RCLR_standardized_merged_conditions = cbind(Conditions, feature_table_RCLR_standardized_merged_conditions)
+feature_table_RCLR_standardized_merged_conditions
+```
+
+### Minimum value imputation
+```{r}
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions = feature_table_RCLR_standardized_merged_conditions
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions[feature_table_RCLR_standardization_min_value_imputation_merged_conditions == 0] = min(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)])
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions
+```
+
+```{r}
+feature_table_RCLR_standardization_min_value_imputation_merged_conditions
+```
+
+
+### kNN Imputation (VIM)
+```{r}
+KNN_input_feature_table_RCLR_standardized = feature_table_RCLR_standardized_merged_conditions
+
+KNN_input_feature_table_RCLR_standardized[KNN_input_feature_table_RCLR_standardized == 0] <- NA #Substitute 0 values with NA values
+KNN_input_feature_table_RCLR_standardized
+```
+
+```{r}
+missing_data_check = KNN_input_feature_table_RCLR_standardized
+sum(is.na(missing_data_check))
+```
+
+
+#### Only impute missing values from true data
+```{r, cache=TRUE}
+#This step took ~3 hours
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions = kNN(KNN_input_feature_table_RCLR_standardized, k = 3, numFun = mean, useImputedDist = FALSE, imp_var = FALSE)
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions
+```
+
+```{r}
+row.names(feature_table_RCLR_standardization_KNN_imputation_merged_conditions) = row.names(KNN_input_feature_table_RCLR_standardized) #Set row names for imputed dataframe
+feature_table_RCLR_standardization_KNN_imputation_merged_conditions
+```
+
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions = feature_table_RCLR_standardized_merged_conditions
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+
+#Changes zeros in the data frame to be imputed to NA values
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[feature_table_RCLR_standardization_random_forests_imputation_merged_conditions == 0] <- NA
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+```
+
+```{r, include = FALSE, cache=TRUE}
+#This step takes the longest - about 4 minutes
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions_results = missForest(xmis = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, verbose = FALSE, xtrue = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)
+```
+
+```{r}
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions_results$ximp
+feature_table_RCLR_standardization_random_forests_imputation_merged_conditions
+```
+
+
+## Imputation, followed by RCLR transformation
+### kNN Imputation (VIM)
+```{r}
+KNN_input_feature_table_merged_conditions = feature_table_merged_conditions
+KNN_input_feature_table_merged_conditions
+
+KNN_input_feature_table_merged_conditions[KNN_input_feature_table_merged_conditions == 0] <- NA #Substitute 0 values with NA values
+KNN_input_feature_table_merged_conditions
+```
+#### Only impute missing values from true data
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+feature_table_KNN_imputation = kNN(KNN_input_feature_table_merged_conditions, k = 3, numFun = mean, useImputedDist = FALSE, imp_var = FALSE)
+feature_table_KNN_imputation
+```
+
+```{r}
+feature_table_KNN_imputation_CLR_standardization_merged_conditions = decostand(feature_table_KNN_imputation[2:ncol(feature_table_KNN_imputation)], method = "clr")
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+
+row.names(feature_table_KNN_imputation_CLR_standardization_merged_conditions) = row.names(feature_table_merged_conditions) #Set row names for imputed dataframe
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+
+feature_table_KNN_imputation_CLR_standardization_merged_conditions = cbind(Conditions, feature_table_KNN_imputation_CLR_standardization_merged_conditions)
+feature_table_KNN_imputation_CLR_standardization_merged_conditions
+```
+
+
+#### Using imputations for further imputations
+```{r, cache=TRUE}
+#This step takes about 5 minutes
+feature_table_KNN_imputation_use_imputed_values = kNN(KNN_input_feature_table_merged_conditions, k = 3, numFun = mean, useImputedDist = TRUE, imp_var = FALSE)
+```
+
+```{r}
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions = decostand(feature_table_KNN_imputation_use_imputed_values[2:ncol(feature_table_KNN_imputation_use_imputed_values)], method = "clr")
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+row.names(feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions) = row.names(feature_table_merged_conditions) #Set row names for imputed dataframe
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions = cbind(Conditions, feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions)
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+
+#Encode Conditions as a factor with discrete levels
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions$Conditions = factor(feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions$Conditions, levels = c("Allmix_BK_10pM", "Allmix_BK_100pM", "Allmix_BK_1nM", "Allmix_BK_10nM", "Allmix_BK_100nM", "Allmix_BK_1uM", "Allmix_BK_10uM")) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_KNN_imputation_use_imputed_values_CLR_standardization_merged_conditions
+```
+
+### Random Forests
+```{r}
+#Copy full data set for RF imputation
+random_forests_imputation_merged_conditions = feature_table_merged_conditions
+random_forests_imputation_merged_conditions
+
+#Changes zeros in the data frame to be imputed to NA values
+random_forests_imputation_merged_conditions[random_forests_imputation_merged_conditions == 0] <- NA
+random_forests_imputation_merged_conditions
+```
+
+```{r, include = FALSE, cache=TRUE}
+#This step takes the longest - about 4 minutes
+random_forests_imputation_merged_conditions_results = missForest(xmis = random_forests_imputation_merged_conditions, verbose = FALSE, xtrue = random_forests_imputation_merged_conditions)
+```
+
+```{r}
+random_forests_imputation_merged_conditions = random_forests_imputation_merged_conditions_results$ximp
+random_forests_imputation_merged_conditions
+
+random_forests_imputation_CLR_standardization_merged_conditions = select(random_forests_imputation_merged_conditions, -Conditions) %>% decostand(method = "clr")
+random_forests_imputation_CLR_standardization_merged_conditions
+
+random_forests_imputation_CLR_standardization_merged_conditions = cbind(Conditions, random_forests_imputation_CLR_standardization_merged_conditions)
+random_forests_imputation_CLR_standardization_merged_conditions
+```
+
+## PCA Plots
+```{r}
+#Check which columns have zero variance, can't use scale. in prcomp for columns which have zero variance:
+which(apply(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)], 2, var) == 0)
+which(apply(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)], 2, var) == 0)
+which(apply(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)], 2, var) == 0)
+```
+
+### Create diet vector for plotting
+```{r}
+diet <- c("Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Omnivore", "Omnivore", "Omnivore",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian",
+          "Vegetarian", "Vegetarian", "Vegetarian")
+diet <- as.factor(diet)
+diet
+```
+
+### Raw
+```{r}
+# PCA_results_raw = prcomp(feature_table_merged_conditions[2:ncol(feature_table_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_raw = autoplot(PCA_results_raw, data = feature_table_merged_conditions, main = "Raw Data PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_raw
+```
+
+```{r}
+# Perform PCA
+pca_results_source <-
+  prcomp(feature_table_merged_conditions[2:ncol(feature_table_merged_conditions)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                           4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_source$x[, 1],
+  PC2 = pca_results_source$x[, 2],
+  Sample = feature_table_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_source)$importance[2, 1:2] * 100
+
+#aes(label = Sample), con.type = "straight", label.buffer = unit(0, "mm"), con.cap = unit(0, "mm"),
+plot_pca_source <- ggplot(pca_data,
+                          aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                              shape = Diet)) +
+  ggtitle("PCA (raw data)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_source
+```
+
+### TIC
+```{r}
+# PCA_results_TIC_normalization = prcomp(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_TIC_normalization = autoplot(PCA_results_TIC_normalization, data = feature_table_TIC_normalization_merged_conditions, main = "TIC Normalized Data PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_TIC_normalization
+```
+
+```{r}
+# Perform PCA
+pca_results_tic <-
+  prcomp(feature_table_TIC_normalization_merged_conditions[2:ncol(feature_table_TIC_normalization_merged_conditions)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                     4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_tic$x[, 1],
+  PC2 = pca_results_tic$x[, 2],
+  Sample = feature_table_TIC_normalization_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_tic)$importance[2, 1:2] * 100
+
+plot_pca_tic <- ggplot(pca_data,
+                       aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                           shape = Diet)) +
+  ggtitle("PCA (TIC-normalized data)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_tic
+```
+
+### CLR
+```{r}
+# PCA_results_CLR_transformation = prcomp(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 41987)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_CLR_transformation = autoplot(PCA_results_CLR_transformation, data = feature_table_CLR_standardized_merged_conditions, main = "CLR Standardized Data PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_CLR_transformation
+```
+
+```{r}
+# Perform PCA
+pca_results_clr <-
+  prcomp(feature_table_CLR_standardized_merged_conditions[2:ncol(feature_table_CLR_standardized_merged_conditions)][, -c(2225, 2628, 2853, 3062, 3299, 3622,
+                                             4122, 4126, 4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_clr$x[, 1],
+  PC2 = pca_results_clr$x[, 2] * -1,
+  Sample = feature_table_CLR_standardized_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_clr)$importance[2, 1:2] * 100
+
+plot_pca_clr <- ggplot(pca_data,
+                           aes(x = PC1, y = PC2, color = Sample, fill = Sample,
+                               shape = Diet)) +
+  ggtitle("PCA (CLR transformed data)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_clr
+```
+
+
+### RCLR Transformation, No Imputation
+```{r}
+# PCA_results_RCLR_transformation_no_imputation = prcomp(feature_table_RCLR_standardized_merged_conditions[2:ncol(feature_table_RCLR_standardized_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_no_imputation = autoplot(PCA_results_RCLR_transformation_no_imputation, data = feature_table_RCLR_standardized_merged_conditions, main = "RCLR Standardized Data (No Imputation) PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_no_imputation
+```
+
+### RCLR Transformation, Minimum value imputation
+```{r}
+# PCA_results_RCLR_transformation_min_imputation = prcomp(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_min_imputation = autoplot(PCA_results_RCLR_transformation_min_imputation, data = feature_table_RCLR_standardization_min_value_imputation_merged_conditions, main = "RCLR Standardized Data, Minimum Value Imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_min_imputation
+```
+
+```{r}
+# Perform PCA
+pca_results_rclr_min <-
+  prcomp(feature_table_RCLR_standardization_min_value_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_min_value_imputation_merged_conditions)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_rclr_min$x[, 1],
+  PC2 = pca_results_rclr_min$x[, 2],
+  Sample = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_rclr_min)$importance[2, 1:2] * 100
+
+plot_pca_rclr_min <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (RCLR transformed data, min-value imputation)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_rclr_min
+```
+
+
+### RCLR Transformation, KNN Imputation
+```{r}
+# PCA_results_RCLR_transformation_KNN_imputation = prcomp(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_KNN_imputation = autoplot(PCA_results_RCLR_transformation_KNN_imputation, data = feature_table_RCLR_standardization_KNN_imputation_merged_conditions, main = "RCLR Standardized Data, KNN Imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_KNN_imputation
+```
+
+```{r}
+# Perform PCA
+pca_results_rclr_knn <-
+  prcomp(feature_table_RCLR_standardization_KNN_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_KNN_imputation_merged_conditions)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_rclr_knn$x[, 1],
+  PC2 = pca_results_rclr_knn$x[, 2],
+  Sample = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_rclr_knn)$importance[2, 1:2] * 100
+
+plot_pca_rclr_knn <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (RCLR transformed data, kNN imputation)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_rclr_knn
+```
+
+
+### RCLR Transformation, Random Forests Imputation
+```{r}
+# PCA_results_RCLR_transformation_random_forests_imputation = prcomp(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_RCLR_transformation_random_forests_imputation = autoplot(PCA_results_RCLR_transformation_random_forests_imputation, data = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, main = "RCLR Standardized Data, Random Forests imputation PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_RCLR_transformation_random_forests_imputation
+```
+
+```{r}
+# Perform PCA
+pca_results_rclr_rf <-
+  prcomp(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions[2:ncol(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_rclr_rf$x[, 1],
+  PC2 = pca_results_rclr_rf$x[, 2],
+  Sample = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_rclr_rf)$importance[2, 1:2] * 100
+
+plot_pca_rclr_rf <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (RCLR transformed data, Random Forest imputation)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_rclr_rf
+```
+
+### KNN Imputation, CLR Standardization
+```{r}
+# PCA_results_KNN_imputation_CLR_standardization = prcomp(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_KNN_imputation_CLR_standardization = autoplot(PCA_results_KNN_imputation_CLR_standardization, data = feature_table_KNN_imputation_CLR_standardization_merged_conditions, main = "KNN Imputation, CLR Standardized PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_KNN_imputation_CLR_standardization
+```
+
+```{r}
+# Perform PCA
+pca_results_knn_clr <-
+  prcomp(feature_table_KNN_imputation_CLR_standardization_merged_conditions[2:ncol(feature_table_KNN_imputation_CLR_standardization_merged_conditions)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_knn_clr$x[, 1],
+  PC2 = pca_results_knn_clr$x[, 2],
+  Sample = feature_table_KNN_imputation_CLR_standardization_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_knn_clr)$importance[2, 1:2] * 100
+
+plot_pca_knn_clr <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (kNN imputation on raw data, followed by CLR)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_knn_clr
+```
+
+### Random Forests Imputation, CLR Standardization
+```{r}
+# PCA_results_random_forests_imputation_CLR_standardization = prcomp(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)][,-c(2225, 2628, 2853, 3062, 3299, 3622, 4122, 4126, 4198)], scale. = TRUE) #Compute PCA
+# 
+# PCA_plot_random_forests_imputation_CLR_standardization = autoplot(PCA_results_random_forests_imputation_CLR_standardization, data = random_forests_imputation_CLR_standardization_merged_conditions, main = "Random Forests Imputation, CLR Standardized PCA", colour = "Conditions") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) 
+# 
+# PCA_plot_random_forests_imputation_CLR_standardization
+```
+
+```{r}
+# Perform PCA
+pca_results_rf_clr <-
+  prcomp(random_forests_imputation_CLR_standardization_merged_conditions[2:ncol(random_forests_imputation_CLR_standardization_merged_conditions)][, -c(2225, 2628, 2853, 3062,
+                                                       3299, 3622, 4122, 4126,
+                                                       4198)],
+         scale. = TRUE)
+
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_rf_clr$x[, 1],
+  PC2 = pca_results_rf_clr$x[, 2],
+  Sample = random_forests_imputation_CLR_standardization_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_rf_clr)$importance[2, 1:2] * 100
+
+plot_pca_rf_clr <- ggplot(pca_data, aes(x = PC1, y = PC2, color = Sample,
+                                              fill = Sample, shape = Diet)) +
+  ggtitle("PCA (R.F. imputation on raw data, followed by CLR)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "none",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_rf_clr
+```
+
+### Merged Plots
+### Extract legend
+```{r}
+# Create a data frame with PCA results and species information
+pca_data <- data.frame(
+  PC1 = pca_results_source$x[, 1],
+  PC2 = pca_results_source$x[, 2],
+  Sample = random_forests_imputation_CLR_standardization_merged_conditions$Conditions,
+  Diet = diet
+)
+variance_explained <- summary(pca_results_source)$importance[2, 1:2] * 100
+
+plot_pca_legend_source <- ggplot(pca_data,
+                                 aes(x = PC1, y = PC2, color = Sample,
+                                     fill = Sample,
+                                     shape = Diet)) +
+  theme_bw() +
+  geom_point(size = 3) +
+  #geom_mark_ellipse(aes(label = Sample), alpha = 0.1) +
+  labs(x = paste0("Principal Component 1 (",
+                  round(variance_explained[1], 2), "%)"),
+       y = paste0("Principal Component 2 (",
+                  round(variance_explained[2], 2), "%)")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        legend.position = "bottom",
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        legend.title = element_text(face = "bold"),
+        legend.text = element_text(face = "bold")) +
+  guides(color = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+
+rm(pca_data)
+rm(variance_explained)
+
+plot_pca_legend = get_legend(plot_pca_legend_source)
+plot_pca_legend
+
+rm(plot_pca_legend_source)
+```
+
+```{r}
+# pca_plots_grid1 = cowplot::plot_grid(PCA_plot_raw, PCA_plot_TIC_normalization, PCA_plot_CLR_transformation, PCA_plot_RCLR_transformation_min_imputation, labels = c("A", "B", "C", "D"))
+# ggsave("pca_plots_grid1.png", pca_plots_grid1, width = 18, height = 10.125, units = "in")
+```
+
+```{r}
+library(cowplot)
+pca_plots_grid1 = plot_grid(plot_pca_source, plot_pca_tic, plot_pca_clr,
+                            plot_pca_rclr_min,
+                            labels = c("A", "B", "C", "D"))
+
+pca_plots_grid1 = plot_grid(pca_plots_grid1, plot_pca_legend, ncol = 1,
+                            rel_heights = c(1, 0.05))
+pca_plots_grid1
+
+ggsave("pca_plots_grid1.png", pca_plots_grid1, width = 12, height = 12,
+       units = "in", dpi = 1000)
+ggsave("pca_plots_grid1.svg", pca_plots_grid1, width = 12, height = 12,
+       units = "in", dpi = 1000)
+```
+
+```{r}
+# pca_plots_grid2 = cowplot::plot_grid(PCA_plot_RCLR_transformation_random_forests_imputation, PCA_plot_RCLR_transformation_KNN_imputation, PCA_plot_random_forests_imputation_CLR_standardization, PCA_plot_KNN_imputation_CLR_standardization, labels = c("A", "B", "C", "D"))
+# ggsave("pca_plots_grid2.png", pca_plots_grid2, width = 18, height = 10.125, units = "in")
+```
+
+```{r}
+pca_plots_grid2 = plot_grid(plot_pca_rclr_knn, plot_pca_rclr_rf,
+                            plot_pca_knn_clr, plot_pca_rf_clr,
+                            labels = c("A", "B", "C", "D"))
+
+pca_plots_grid2 = plot_grid(pca_plots_grid2, plot_pca_legend, ncol = 1,
+                            rel_heights = c(1, 0.05))
+pca_plots_grid2
+
+ggsave("pca_plots_grid2.png", pca_plots_grid2, width = 12, height = 12,
+       units = "in", dpi = 1000)
+ggsave("pca_plots_grid2.svg", pca_plots_grid2, width = 12, height = 12,
+       units = "in", dpi = 1000)
+```
+
+## Box Plots
+### 182 - Mostly Non-missing
+#### Raw
+```{r}
+feature_table_merged_conditions_diet = feature_table_merged_conditions
+
+Diet = c("Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Omnivore", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian", "Vegetarian")
+
+feature_table_merged_conditions_diet$Diet = Diet
+feature_table_merged_conditions_diet
+
+feature_table_merged_conditions_diet$Diet = factor(feature_table_merged_conditions_diet$Diet) #Convert "Conditions" variable to a factor, specifying the correct levels (order) of concentrations for all subsequent plotting
+feature_table_merged_conditions_diet
+```
+
+
+```{r}
+# library(ggplot2)
+# boxplot_raw_182 = ggplot(feature_table_merged_conditions_diet, aes(x = Conditions, y = log(feature_table_merged_conditions$`X182` + 1), fill = Conditions)) +
+#   ggtitle("182 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   facet_wrap(~Diet, scale="free") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(182 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_raw_182
+```
+
+```{r}
+# boxplot_raw_182 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log10(feature_table_merged_conditions$`X182` + 1), fill = Conditions)) +
+#   ggtitle("182 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(182 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_raw_182
+```
+
+```{r}
+Sample <- feature_table_merged_conditions$Conditions
+Sample
+```
+
+```{r}
+plot_boxplot_source_3736 <-
+  ggplot(cbind(diet, feature_table_merged_conditions), aes(x = Conditions, y = log(X3736 + 1), 
+                                     fill = Conditions)) +
+  ggtitle("M3736 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,10,1)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_3736
+```
+
+#### TIC
+```{r}
+# boxplot_TIC_normalization_182 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = feature_table_TIC_normalization_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (TIC-normalized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("182") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_TIC_normalization_182
+```
+
+```{r}
+plot_boxplot_tic_3736 <-
+  ggplot(cbind(diet, feature_table_TIC_normalization_merged_conditions), aes(x = Conditions, y = log(X3736 + 1 * 10^-12), fill = Conditions)) +
+  ggtitle("M3736 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-30, -10, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_3736
+```
+
+
+#### CLR
+```{r}
+# boxplot_CLR_standardization_182 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (CLR-standardized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("182") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_CLR_standardization_182
+```
+
+```{r}
+plot_boxplot_tic_clr_3736 <-
+  ggplot(cbind(diet, feature_table_CLR_standardized_merged_conditions), aes(x = Conditions, y = X3736, fill = Conditions)) +
+  ggtitle("M3736 (CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-15,1.5,1.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_3736
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+# boxplot_RCLR_standardization_min_imputation_182 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (RCLR-standardized, minimum value imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("182") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_min_imputation_182
+```
+
+```{r}
+# feature_table_RCLR_standardization_min_value_imputation_merged_conditions_diet = feature_table_RCLR_standardization_min_value_imputation_merged_conditions
+# feature_table_RCLR_standardization_min_value_imputation_merged_conditions_diet$Diet = feature_table_merged_conditions_diet$Diet
+# 
+# boxplot_RCLR_standardization_min_imputation_182 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions_diet, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions_diet$`X182`, fill = Conditions)) +
+#   ggtitle("182 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   facet_wrap(~Diet, scale="free") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(182 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_min_imputation_182
+```
+
+```{r}
+plot_boxplot_tic_rclr_min_3736 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_min_value_imputation_merged_conditions), aes(x = Conditions, y = X3736, fill = Conditions)) +
+  ggtitle("M3736 (RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,-0.5,0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_3736
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+# boxplot_RCLR_standardization_KNN_imputation_182 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (RCLR-standardized, KNN imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("182") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_KNN_imputation_182
+```
+
+```{r}
+# feature_table_RCLR_standardization_KNN_imputation_merged_conditions$Diet = feature_table_merged_conditions_diet$Diet
+# 
+# boxplot_RCLR_standardization_KNN_imputation_182 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   facet_wrap(~Diet, scale="free") +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(182 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_KNN_imputation_182
+```
+
+```{r}
+plot_boxplot_tic_rclr_knn_3736 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_KNN_imputation_merged_conditions), aes(x = Conditions, y = X3736, fill = Conditions)) +
+  ggtitle("M3736 (RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-3.5,-0.5,0.5), limits = c(-3.5, -0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_3736
+```
+
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+# boxplot_RCLR_standardization_random_forests_imputation_182 = ggplot(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$`X182`, fill = Conditions)) +
+#   ggtitle("182 (RCLR-standardized, Random Forests imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("182") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_random_forests_imputation_182
+```
+
+```{r}
+plot_boxplot_tic_rclr_rf_3736 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_random_forests_imputation_merged_conditions), aes(x = Conditions, y = X3736, fill = Conditions)) +
+  ggtitle("M3736 (RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-3.5,-0.5,0.5), limits = c(-3.5, -0.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_3736
+```
+
+#### Merged Plots
+```{r}
+# grid_boxplots_182 = cowplot::plot_grid(boxplot_raw_182, boxplot_TIC_normalization_182, boxplot_CLR_standardization_182, boxplot_RCLR_standardization_min_imputation_182, boxplot_RCLR_standardization_KNN_imputation_182, boxplot_RCLR_standardization_random_forests_imputation_182, labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+# ggsave("182_grid_boxplots.png", grid_boxplots_182, width = 18, height = 10.125, units = "in")
+```
+
+```{r}
+plots_boxplot_3736 = plot_grid(plot_boxplot_source_3736, plot_boxplot_tic_3736, 
+                               plot_boxplot_tic_clr_3736, 
+                               plot_boxplot_tic_rclr_min_3736, 
+                               plot_boxplot_tic_rclr_knn_3736, 
+                               plot_boxplot_tic_rclr_rf_3736,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_3736 = add_sub(plots_boxplot_3736, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_3736.png", plots_boxplot_3736, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_3736.svg", plots_boxplot_3736, width = 18, height = 10.125, units = "in")
+```
+
+
+### 69 - 50/50
+#### Raw
+```{r}
+# boxplot_raw_69 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log10(feature_table_merged_conditions$`X69` + 1), fill = Conditions)) +
+#   ggtitle("69 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(69 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_raw_69
+```
+
+```{r}
+plot_boxplot_source_69 <-
+  ggplot(cbind(diet, feature_table_merged_conditions), aes(x = Conditions, y = log(X69 + 1), 
+                                     fill = Conditions)) +
+  ggtitle("M69 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_69
+```
+
+#### TIC
+```{r}
+# boxplot_TIC_normalization_69 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = feature_table_TIC_normalization_merged_conditions$`X69`, fill = Conditions)) +
+#   ggtitle("69 (TIC-normalized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("69") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_TIC_normalization_69
+```
+
+```{r}
+plot_boxplot_tic_69 <-
+  ggplot(cbind(diet, feature_table_TIC_normalization_merged_conditions), aes(x = Conditions, y = log(X69 + 1 * 10^-12), fill = Conditions)) +
+  ggtitle("M69 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_69
+```
+
+#### CLR
+```{r}
+# boxplot_CLR_standardization_69 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X69`, fill = Conditions)) +
+#   ggtitle("69 (CLR-standardized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("69") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_CLR_standardization_69
+```
+
+```{r}
+plot_boxplot_tic_clr_69 <-
+  ggplot(cbind(diet, feature_table_CLR_standardized_merged_conditions), aes(x = Conditions, y = X69, fill = Conditions)) +
+  ggtitle("M69 (CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-16, 6, 2)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_69
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+# boxplot_RCLR_standardization_min_imputation_69 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$`X69`, fill = Conditions)) +
+#   ggtitle("69 (RCLR-standardized, minimum value imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("69") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_min_imputation_69
+```
+
+```{r}
+plot_boxplot_tic_rclr_min_69 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_min_value_imputation_merged_conditions), aes(x = Conditions, y = X69, fill = Conditions)) +
+  ggtitle("M69 (RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,2.5,1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_69
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+# boxplot_RCLR_standardization_KNN_imputation_69 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X69`, fill = Conditions)) +
+#   ggtitle("69 (RCLR-standardized, KNN imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("69")
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_KNN_imputation_69
+```
+
+```{r}
+plot_boxplot_tic_rclr_knn_69 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_KNN_imputation_merged_conditions), aes(x = Conditions, y = X69, fill = Conditions)) +
+  ggtitle("M69 (RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(1.35,2.25,0.1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_69
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+# boxplot_RCLR_standardization_random_forests_imputation_69 = ggplot(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$`X69`, fill = Conditions)) +
+#   ggtitle("69 (RCLR-standardized, Random Forests imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("69") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_random_forests_imputation_69
+```
+
+```{r}
+plot_boxplot_tic_rclr_rf_69 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_random_forests_imputation_merged_conditions), aes(x = Conditions, y = X69, fill = Conditions)) +
+  ggtitle("M69 (RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(1.35,2.25,0.1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_69
+```
+
+#### Merged Plots
+```{r}
+# grid_boxplots_69 = cowplot::plot_grid(boxplot_raw_69, boxplot_TIC_normalization_69, boxplot_CLR_standardization_69, boxplot_RCLR_standardization_min_imputation_69, boxplot_RCLR_standardization_KNN_imputation_69, boxplot_RCLR_standardization_random_forests_imputation_69, labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+# ggsave("69_grid_boxplots.png", grid_boxplots_69, width = 18, height = 10.125, units = "in")
+```
+
+```{r}
+plots_boxplot_69 = plot_grid(plot_boxplot_source_69, plot_boxplot_tic_69, 
+                               plot_boxplot_tic_clr_69, 
+                               plot_boxplot_tic_rclr_min_69, 
+                               plot_boxplot_tic_rclr_knn_69, 
+                               plot_boxplot_tic_rclr_rf_69,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_69 = add_sub(plots_boxplot_69, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_69.png", plots_boxplot_69, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_69.svg", plots_boxplot_69, width = 18, height = 10.125, units = "in")
+```
+
+### 336 - 50/50 MNAR
+#### Raw
+```{r}
+plot_boxplot_source_336 <-
+  ggplot(cbind(diet, feature_table_merged_conditions), aes(x = Conditions, y = log(X336 + 1), 
+                                     fill = Conditions)) +
+  ggtitle("M336 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_336
+```
+
+#### TIC
+```{r}
+plot_boxplot_tic_336 <-
+  ggplot(cbind(diet, feature_table_TIC_normalization_merged_conditions), aes(x = Conditions, y = log(X336 + 1 * 10^-12), fill = Conditions)) +
+  ggtitle("M336 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_336
+```
+
+#### CLR
+```{r}
+plot_boxplot_tic_clr_336 <-
+  ggplot(cbind(diet, feature_table_CLR_standardized_merged_conditions), aes(x = Conditions, y = X336, fill = Conditions)) +
+  ggtitle("M336 (CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_zoom(y = diet == 'Vegetarian') +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-15, 5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_336
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+plot_boxplot_tic_rclr_min_336 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_min_value_imputation_merged_conditions), aes(x = Conditions, y = X336, fill = Conditions)) +
+  ggtitle("M336 (RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-4.5, 2.5, 1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_336
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+plot_boxplot_tic_rclr_knn_336 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_KNN_imputation_merged_conditions), aes(x = Conditions, y = X336, fill = Conditions)) +
+  ggtitle("M336 (RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(1.9, 2.5, 0.05)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_336
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+plot_boxplot_tic_rclr_rf_336 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_random_forests_imputation_merged_conditions), aes(x = Conditions, y = X336, fill = Conditions)) +
+  ggtitle("M336 (RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(1.9, 2.5, 0.05)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_336
+```
+
+#### Merged Plots
+```{r}
+plots_boxplot_336 = plot_grid(plot_boxplot_source_336, plot_boxplot_tic_336, 
+                               plot_boxplot_tic_clr_336, 
+                               plot_boxplot_tic_rclr_min_336, 
+                               plot_boxplot_tic_rclr_knn_336, 
+                               plot_boxplot_tic_rclr_rf_336,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_336 = add_sub(plots_boxplot_336, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_336.png", plots_boxplot_336, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_336.svg", plots_boxplot_336, width = 18, height = 10.125, units = "in")
+```
+
+### Mostly missing
+#### Raw
+```{r}
+# boxplot_raw_3206 = ggplot(feature_table_merged_conditions, aes(x = Conditions, y = log10(feature_table_merged_conditions$`X3206` + 1), fill = Conditions)) +
+#   ggtitle("3206 (raw data, log10 transformed)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("log10(3206 + 1)") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_raw_3206
+```
+
+```{r}
+plot_boxplot_source_3206 <-
+  ggplot(cbind(diet, feature_table_merged_conditions), aes(x = Conditions, y = log(X3206 + 1), 
+                                     fill = Conditions)) +
+  ggtitle("M3206 (raw data)") +
+  geom_boxplot(show.legend = FALSE) +
+  geom_point(show.legend = FALSE) +
+  facet_wrap(~diet, scale="free_x") +
+  ylab("ln(signal + 1)") +
+  scale_y_continuous(breaks=seq(0,12,2)) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", size = 1),
+        strip.text.x = element_text(size = 14, face = "bold"),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(face = "bold"),
+        axis.text.y = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"))
+plot_boxplot_source_3206
+```
+
+#### TIC
+```{r}
+# boxplot_TIC_normalization_3206 = ggplot(feature_table_TIC_normalization_merged_conditions, aes(x = Conditions, y = feature_table_TIC_normalization_merged_conditions$`X3206`, fill = Conditions)) +
+#   ggtitle("3206 (TIC-normalized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("3206") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_TIC_normalization_3206
+```
+
+```{r}
+plot_boxplot_tic_3206 <-
+  ggplot(cbind(diet, feature_table_TIC_normalization_merged_conditions), aes(x = Conditions, y = log(X3206 + 1 * 10^-12), fill = Conditions)) +
+  ggtitle("M3206 (TIC-normalized data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/TIC + 1e-12)") +
+    scale_y_continuous(breaks=seq(-27.5,-2.5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_3206
+```
+
+#### CLR
+```{r}
+# boxplot_CLR_standardization_3206 = ggplot(feature_table_CLR_standardized_merged_conditions, aes(x = Conditions, y = feature_table_CLR_standardized_merged_conditions$`X3206`, fill = Conditions)) +
+#   ggtitle("3206 (CLR-standardized)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("3206") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_CLR_standardization_3206
+```
+
+```{r}
+plot_boxplot_tic_clr_3206 <-
+  ggplot(cbind(diet, feature_table_CLR_standardized_merged_conditions), aes(x = Conditions, y = X3206, fill = Conditions)) +
+  ggtitle("M3206 (CLR transformed data)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-15.5, 5, 2.5)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_clr_3206
+```
+
+#### RCLR Standardization, minimum value imputation
+```{r}
+# boxplot_RCLR_standardization_min_imputation_3206 = ggplot(feature_table_RCLR_standardization_min_value_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_min_value_imputation_merged_conditions$`X3206`, fill = Conditions)) +
+#   ggtitle("3206 (RCLR-standardized, minimum value imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("3206") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_min_imputation_3206
+```
+
+```{r}
+plot_boxplot_tic_rclr_min_3206 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_min_value_imputation_merged_conditions), aes(x = Conditions, y = X3206, fill = Conditions)) +
+  ggtitle("M3206 (RCLR transformation, min imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(-4.5,2.5,1)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_min_3206
+```
+
+#### RCLR Standardization, KNN imputation
+```{r}
+# boxplot_RCLR_standardization_KNN_imputation_3206 = ggplot(feature_table_RCLR_standardization_KNN_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_KNN_imputation_merged_conditions$`X3206`, fill = Conditions)) +
+#   ggtitle("3206 (RCLR-standardized, KNN imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("3206") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_KNN_imputation_3206
+```
+
+```{r}
+plot_boxplot_tic_rclr_knn_3206 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_KNN_imputation_merged_conditions), aes(x = Conditions, y = X3206, fill = Conditions)) +
+  ggtitle("M3206 (RCLR transformation, kNN imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+    scale_y_continuous(breaks=seq(1.18, 1.4, 0.02)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_knn_3206
+```
+
+#### RCLR Standardization, Random Forests imputation
+```{r}
+# library(ggplot2)
+# boxplot_RCLR_standardization_random_forests_imputation_3206 = ggplot(feature_table_RCLR_standardization_random_forests_imputation_merged_conditions, aes(x = Conditions, y = feature_table_RCLR_standardization_random_forests_imputation_merged_conditions$`X3206`, fill = Conditions)) +
+#   ggtitle("3206 (RCLR-standardized, Random Forests imputation)") +
+#   geom_boxplot(show.legend = FALSE) +
+#   geom_point(show.legend = FALSE) +
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   ylab("3206") 
+#   #theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+# boxplot_RCLR_standardization_random_forests_imputation_3206
+```
+
+```{r}
+plot_boxplot_tic_rclr_rf_3206 <-
+  ggplot(cbind(diet, feature_table_RCLR_standardization_random_forests_imputation_merged_conditions), aes(x = Conditions, y = X3206, fill = Conditions)) +
+  ggtitle("M3206 (RCLR transformation, R.F. imputation)") +
+    geom_boxplot(show.legend = FALSE) +
+    geom_point(show.legend = FALSE) +
+    facet_wrap(~diet, scale="free_x") +
+    ylab("ln(signal/GM)") +
+  scale_y_continuous(breaks=seq(1.18, 1.4, 0.02)) +
+    theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_rect(fill = NA, colour = "black", size = 1),
+          strip.text.x = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.y = element_text(face = "bold"))
+plot_boxplot_tic_rclr_rf_3206
+```
+
+#### Merged Plots
+```{r}
+# getwd()
+# grid_boxplots_3206 = cowplot::plot_grid(boxplot_raw_3206, boxplot_TIC_normalization_3206, boxplot_CLR_standardization_3206, boxplot_RCLR_standardization_min_imputation_3206, boxplot_RCLR_standardization_KNN_imputation_3206, boxplot_RCLR_standardization_random_forests_imputation_3206, labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+# grid_boxplots_3206
+# ggsave("3206_grid_boxplots.png", grid_boxplots_3206, width = 18, height = 10.125, units = "in")
+```
+
+```{r}
+plots_boxplot_3206 = plot_grid(plot_boxplot_source_3206, plot_boxplot_tic_3206, 
+                               plot_boxplot_tic_clr_3206, 
+                               plot_boxplot_tic_rclr_min_3206, 
+                               plot_boxplot_tic_rclr_knn_3206, 
+                               plot_boxplot_tic_rclr_rf_3206,
+                               labels = c('A', 'B', 'C', 'D', 'E', 'F'))
+plots_boxplot_3206 = add_sub(plots_boxplot_3206, "Sample Group", fontface = "bold")
+
+#plots_boxplot_3736 = plot_grid(plots_boxplot_3736, plot_pca_legend, ncol = 1,
+                            #rel_heights = c(1, 0.05))
+
+ggsave("boxplot_3206.png", plots_boxplot_3206, width = 18, height = 10.125, units = "in")
+ggsave("boxplot_3206.svg", plots_boxplot_3206, width = 18, height = 10.125, units = "in")
+```
+
